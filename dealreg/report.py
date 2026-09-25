@@ -118,9 +118,10 @@ def _pod_payload(pod: PodWindow, months: list[str]) -> dict:
     }
 
 
-def build_payload(analysis: Analysis) -> dict:
+def build_payload(analysis: Analysis, banner: str | None = None) -> dict:
     return {
         "meta": {
+            "synthetic_warning": banner,
             "window_label": analysis.window_label,
             "months": analysis.months,
             "n_months": len(analysis.months),
@@ -136,9 +137,9 @@ def build_payload(analysis: Analysis) -> dict:
     }
 
 
-def write_dashboard(analysis: Analysis, outdir: Path) -> Path:
+def write_dashboard(analysis: Analysis, outdir: Path, banner: str | None = None) -> Path:
     outdir.mkdir(parents=True, exist_ok=True)
-    payload = build_payload(analysis)
+    payload = build_payload(analysis, banner=banner)
     html = TEMPLATE.read_text(encoding="utf-8")
 
     # `</script>` inside JSON would terminate the host script tag early, and a

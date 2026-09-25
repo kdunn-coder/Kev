@@ -52,6 +52,9 @@ def main(argv: list[str] | None = None) -> int:
                          "(default: last complete month, or the last month in the data)")
     ap.add_argument("--describe", action="store_true",
                     help="print detected columns and sample values, then exit")
+    ap.add_argument("--banner", type=str, default=None,
+                    help="warning banner to show at the top of the dashboard, e.g. to "
+                         "mark a run against test data")
     args = ap.parse_args(argv)
 
     if not args.input.exists():
@@ -115,7 +118,7 @@ def main(argv: list[str] | None = None) -> int:
     args.outdir.mkdir(parents=True, exist_ok=True)
     csvs = export.write_csvs(analysis, args.outdir)
     findings = export.write_findings(analysis, args.outdir)
-    dashboard = report.write_dashboard(analysis, args.outdir)
+    dashboard = report.write_dashboard(analysis, args.outdir, banner=args.banner)
 
     q = analysis.data_quality
     print(f"\nWindow: {analysis.window_label} ({len(analysis.months)} months)")
