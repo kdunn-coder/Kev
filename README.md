@@ -18,16 +18,24 @@ months"** — so the output leads with concentration measures, not volume.
 ## Quick start
 
 ```bash
-# 1. Check that your export's columns were detected correctly.
-python3 run.py --input path/to/your-export.csv --describe
+# 1. Check that your input's columns were detected correctly.
+python3 run.py --input path/to/data.csv --describe
 
 # 2. Run the analysis.
-python3 run.py --input path/to/your-export.csv
+python3 run.py --input path/to/data.csv
 
 # Outputs land in ./out/ :
 #   findings.md     <- read this first: what changed in each pod, in words
 #   dashboard.html  <- interactive; open in a browser
 #   *.csv           <- tidy tables for Excel / BI
+```
+
+Input can be a **CSV/XLSX export** or **JSON query results** from a warehouse —
+see [Data sources](#data-sources). Several inputs may be passed at once and are
+merged, so a large pull can be fetched in chunks:
+
+```bash
+python3 run.py --input q1.json q2.json q3.json q4.json
 ```
 
 Requires Python 3.10+ and PyYAML (`pip install pyyaml`). `openpyxl` is needed
@@ -48,6 +56,48 @@ To verify the pipeline itself:
 ```bash
 python3 tests/test_core.py    # 128 checks, no test framework needed
 ```
+
+---
+
+## Data sources
+
+Two ways in. Both are normalized by the same code and produce the same
+outputs — that equivalence is asserted in the test suite, not assumed.
+
+### A. Warehouse query (no file handling)
+
+`sql/deal_reg_allocation.sql` is a template for the pull. Save the results as
+JSON and run against them directly:
+
+```bash
+python3 run.py --input result.json
+```
+
+Accepted JSON shapes: a list of row objects, `{"rows": [...]}` / `{"data": ...}`
+/ `{"records": ...}`, `{"columns": [...], "rows": [[...]]}`, or newline-delimited
+objects.
+
+**The query is aggregated on purpose.** It groups in SQL and returns a
+`DEAL_REGS` count per group; the pipeline multiplies by it. The reason is that
+query results usually have to travel through a conversation or an API response,
+where a raw pull of every registration is slow and may not fit. Aggregating
+caps the row count at months × reps × deal types × stages, so ten times the
+deal volume still returns roughly the same number of rows.
+
+Any column named `count`, `deal_regs`, `n`, `cnt` (and similar) is picked up
+automatically. Rows with a count of zero or less are skipped and reported
+rather than silently distorting every share.
+
+If one response can't hold the result, add a date predicate, save each slice,
+and pass them all — chunks are merged and de-duplicated by registration id.
+
+> **Grain matters.** Group by month, owner, ISR, territory, country, deal type
+> and stage — and *nothing else*. Adding account, partner or registration id
+> makes every row unique and defeats the aggregation entirely.
+
+### B. CSV / XLSX export
+
+The column spec is below. Headers do not need renaming.
 
 ---
 
@@ -72,6 +122,7 @@ complete. No date grouping, no summaries: **one row per deal registration**.
 | Partner Account | optional | Carried through for reference. |
 | Account Name | optional | Carried through for reference. |
 | Close Date | optional | Read but not used for bucketing. |
+| Count / Deal Regs | optional | Only for pre-aggregated input — how many registrations the row stands for. |
 
 Export as CSV. Headers do not need renaming — the loader matches them against
 a large alias list, so `Deal Registration: Created Date`, `Date Submitted` and
@@ -213,13 +264,15 @@ dealreg/analyze.py            the pipeline; windowing and trend computation
 dealreg/export.py             CSV outputs and the findings write-up
 dealreg/report.py             dashboard data payload
 dealreg/templates/            dashboard HTML/CSS/JS
+sql/deal_reg_allocation.sql   warehouse query template (placeholders to fill)
 samples/make_sample.py        synthetic export generator (fabricated data)
 ```
 
 ### Options
 
 ```
---input, -i      CRM export (.csv or .xlsx)                      [required]
+--input, -i      one or more inputs: .csv, .xlsx, .json, .jsonl   [required]
+                 several are merged and de-duplicated by reg id
 --outdir, -o     output directory                                [./out]
 --months         window length in months                         [24]
 --end-month      last month of the window, YYYY-MM   [last complete month]

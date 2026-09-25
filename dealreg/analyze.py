@@ -154,19 +154,22 @@ def _accumulate(
         pod = pods.setdefault(rec.pod, PodWindow(pod=rec.pod, months=months))
         rw = pod.reps.setdefault(owner, RepWindow(rep=owner, pod=rec.pod))
 
-        rw.monthly[rec.month] = rw.monthly.get(rec.month, 0) + 1
-        rw.by_stage[rec.stage] += 1
-        rw.by_outcome[rec.outcome] += 1
-        rw.by_deal_type[rec.deal_type] += 1
-        rw.month_deal_type[(rec.month, rec.deal_type)] += 1
-        rw.month_outcome[(rec.month, rec.outcome)] += 1
+        # Count by weight, not by row: a row from a pre-aggregated warehouse
+        # query stands for `weight` registrations, a raw export row for one.
+        w = rec.weight
+        rw.monthly[rec.month] = rw.monthly.get(rec.month, 0) + w
+        rw.by_stage[rec.stage] += w
+        rw.by_outcome[rec.outcome] += w
+        rw.by_deal_type[rec.deal_type] += w
+        rw.month_deal_type[(rec.month, rec.deal_type)] += w
+        rw.month_outcome[(rec.month, rec.outcome)] += w
         if owner_attr == "rep" and rec.isr:
-            rw.isrs[rec.isr] += 1
+            rw.isrs[rec.isr] += w
 
-        pod.monthly_total[rec.month] = pod.monthly_total.get(rec.month, 0) + 1
-        pod.month_deal_type[(rec.month, rec.deal_type)] += 1
-        pod.month_outcome[(rec.month, rec.outcome)] += 1
-        pod.month_stage[(rec.month, rec.stage)] += 1
+        pod.monthly_total[rec.month] = pod.monthly_total.get(rec.month, 0) + w
+        pod.month_deal_type[(rec.month, rec.deal_type)] += w
+        pod.month_outcome[(rec.month, rec.outcome)] += w
+        pod.month_stage[(rec.month, rec.stage)] += w
 
         if rec.amount is not None:
             rw.monthly_amount[rec.month] = rw.monthly_amount.get(rec.month, 0.0) + rec.amount
@@ -249,12 +252,25 @@ def _data_quality(
 ) -> dict[str, object]:
     window_set = set(window)
     in_window = [r for r in records if r.month in window_set]
-    n = len(in_window) or 1
+    # Percentages are of registrations, not of input rows: with a pre-aggregated
+    # source one row can stand for hundreds of regs, so counting rows would
+    # badly misstate how much of the data is missing a field.
+    n = sum(r.weight for r in in_window) or 1
+
+    def share(pred) -> float:
+        return sum(r.weight for r in in_window if pred(r)) / n * 100
+
+    aggregated = any(r.weight != 1 for r in records)
     return {
         "rows_in_file": load_result.total_rows,
         "rows_loaded": len(records),
         "rows_in_window": len(in_window),
         "rows_outside_window": out_of_window,
+        "pre_aggregated": aggregated,
+        "regs_in_window": sum(r.weight for r in in_window),
+        "regs_outside_window": sum(
+            r.weight for r in records if r.month and r.month not in window_set
+        ),
         "skipped": dict(load_result.skipped),
         "resolved_headers": dict(load_result.resolved_headers),
         "unresolved_fields": [
@@ -269,12 +285,12 @@ def _data_quality(
         "unresolved_countries": dict(
             sorted(resolver.unresolved_countries.items(), key=lambda kv: -kv[1])[:25]
         ),
-        "pct_missing_rep": sum(1 for r in in_window if not r.rep) / n * 100,
-        "pct_missing_isr": sum(1 for r in in_window if not r.isr) / n * 100,
-        "pct_missing_stage": sum(1 for r in in_window if r.stage == UNASSIGNED) / n * 100,
-        "pct_missing_deal_type": sum(1 for r in in_window if r.deal_type == UNASSIGNED) / n * 100,
-        "pct_unassigned_pod": sum(1 for r in in_window if r.pod == UNASSIGNED) / n * 100,
-        "pct_missing_amount": sum(1 for r in in_window if r.amount is None) / n * 100,
+        "pct_missing_rep": share(lambda r: not r.rep),
+        "pct_missing_isr": share(lambda r: not r.isr),
+        "pct_missing_stage": share(lambda r: r.stage == UNASSIGNED),
+        "pct_missing_deal_type": share(lambda r: r.deal_type == UNASSIGNED),
+        "pct_unassigned_pod": share(lambda r: r.pod == UNASSIGNED),
+        "pct_missing_amount": share(lambda r: r.amount is None),
     }
 
 
@@ -348,6 +364,19 @@ def rep_trends(pod: PodWindow) -> list[RepTrend]:
         dt_counts = rw.by_deal_type
         oc = rw.by_outcome
 
+        # Counter.most_common breaks ties by insertion order, which depends on
+        # the order rows arrived in -- so the same data from a CSV and from a
+        # pre-aggregated query could report different "top" deal types for a
+        # rep with an exact tie. Break ties on the canonical order instead, so
+        # the answer depends only on the data.
+        top_deal_type = UNASSIGNED
+        if dt_counts:
+            def _rank(item: tuple[str, int]) -> tuple[int, int, str]:
+                name, n = item
+                order = DEAL_TYPES.index(name) if name in DEAL_TYPES else len(DEAL_TYPES)
+                return (-n, order, name)
+            top_deal_type = min(dt_counts.items(), key=_rank)[0]
+
         out.append(
             RepTrend(
                 rep=rep, pod=pod.pod, total=total,
@@ -359,7 +388,7 @@ def rep_trends(pod: PodWindow) -> list[RepTrend]:
                 ),
                 first_month=first, last_month=last, months_active=len(active),
                 monthly_slope=slope, tenure_flag=flag,
-                top_deal_type=(dt_counts.most_common(1)[0][0] if dt_counts else UNASSIGNED),
+                top_deal_type=top_deal_type,
                 new_business_pct=(dt_counts["New Business"] / total * 100) if total else None,
                 renewal_pct=(dt_counts["Renewal"] / total * 100) if total else None,
                 open_pct=(oc["Open"] / total * 100) if total else None,

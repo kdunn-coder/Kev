@@ -30,6 +30,12 @@ REQUIRED_FIELDS = ("created_date", "rep")
 OPTIONAL_FIELDS = (
     "deal_reg_id", "isr", "pod", "stage", "deal_type",
     "country", "amount", "partner", "account", "close_date",
+    # `count` lets a row stand for N registrations instead of one. That is what
+    # makes a warehouse source practical: a GROUP BY in SQL returns a few
+    # hundred rows where the raw registrations would be many thousands, and
+    # normalization is per-value rather than per-row, so aggregating first and
+    # normalizing after gives identical results.
+    "count",
 )
 
 ALL_FIELDS = REQUIRED_FIELDS + OPTIONAL_FIELDS
@@ -101,12 +107,23 @@ HEADER_ALIASES: dict[str, list[str]] = {
         "account name", "end user account", "end customer", "customer name",
         "account", "company name", "company",
     ],
+    "count": [
+        "deal reg count", "deal regs", "registration count", "registrations",
+        "reg count", "row count", "record count", "num regs", "n regs",
+        "count", "cnt", "n",
+    ],
 }
 
 
 @dataclass
 class Record:
-    """One deal registration, normalized."""
+    """One deal registration, or a pre-aggregated group of them.
+
+    `weight` is how many registrations this row stands for: 1 for a raw export
+    row, N for a row that came back from a `GROUP BY ... COUNT(*)`. Everything
+    downstream counts by weight rather than by row, so both sources produce
+    identical numbers.
+    """
 
     deal_reg_id: str
     created_date: dt.date | None
@@ -121,6 +138,7 @@ class Record:
     partner: str
     account: str
     row_number: int
+    weight: int = 1
 
     # Filled in by the analysis layer.
     pod: str = ""
@@ -377,9 +395,89 @@ class DateParser:
 # ---------------------------------------------------------------------------
 
 
+def _read_json_rows(path: Path) -> tuple[list[str], list[dict[str, Any]]]:
+    """Read query results saved as JSON into (headers, row dicts).
+
+    Accepts what a SQL tool realistically hands back:
+      * a list of objects
+      * ``{"rows": [...]}`` / ``{"data": [...]}`` / ``{"records": [...]}``
+      * ``{"columns": [...], "rows": [[...], ...]}`` (column-and-tuple form)
+      * newline-delimited JSON objects, one per line
+    """
+    import json
+
+    text = path.read_text(encoding="utf-8-sig", errors="replace").strip()
+    if not text:
+        raise SystemExit(f"{path.name} is empty.")
+
+    payload: Any
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        # Newline-delimited JSON.
+        payload = []
+        for n, line in enumerate(text.splitlines(), start=1):
+            line = line.strip().rstrip(",")
+            if not line:
+                continue
+            try:
+                payload.append(json.loads(line))
+            except json.JSONDecodeError as exc:
+                raise SystemExit(
+                    f"{path.name} is neither valid JSON nor newline-delimited "
+                    f"JSON: line {n} could not be parsed ({exc.msg})."
+                ) from exc
+
+    columns: list[str] | None = None
+    if isinstance(payload, dict):
+        for k in ("rows", "data", "records", "result", "results"):
+            if isinstance(payload.get(k), list):
+                cols = payload.get("columns") or payload.get("column_names")
+                if isinstance(cols, list):
+                    columns = [
+                        str(c.get("name", c)) if isinstance(c, dict) else str(c)
+                        for c in cols
+                    ]
+                payload = payload[k]
+                break
+        else:
+            # No envelope key, so this is a bare data row -- which is also what
+            # a one-line NDJSON file looks like after a successful json.loads.
+            payload = [payload]
+
+    if not isinstance(payload, list):
+        raise SystemExit(f"{path.name} must contain a list of rows.")
+    if not payload:
+        raise SystemExit(f"{path.name} contains no rows.")
+
+    # Column-and-tuple form: pair each positional row with the column names.
+    if columns and payload and isinstance(payload[0], (list, tuple)):
+        rows = [dict(zip(columns, r)) for r in payload]
+        return columns, rows
+
+    if not isinstance(payload[0], dict):
+        raise SystemExit(
+            f"{path.name} rows are {type(payload[0]).__name__}, not objects. "
+            f"Either emit rows as JSON objects, or include a 'columns' list."
+        )
+
+    rows = [r for r in payload if isinstance(r, dict)]
+    # Union of keys, first-seen order, since a JSON row may omit null columns.
+    headers: list[str] = []
+    seen: set[str] = set()
+    for r in rows:
+        for k in r:
+            if k not in seen:
+                seen.add(k)
+                headers.append(str(k))
+    return headers, rows
+
+
 def _read_rows(path: Path) -> tuple[list[str], list[dict[str, Any]]]:
-    """Read a CSV or XLSX file into (headers, row dicts)."""
+    """Read a CSV, XLSX or JSON file into (headers, row dicts)."""
     suffix = path.suffix.lower()
+    if suffix in {".json", ".ndjson", ".jsonl"}:
+        return _read_json_rows(path)
     if suffix in {".xlsx", ".xlsm"}:
         try:
             from openpyxl import load_workbook
@@ -425,8 +523,41 @@ def load(
     date_order: str = "auto",
     drop_rows_without_rep: bool = False,
 ) -> LoadResult:
-    """Load and normalize a deal-registration export."""
+    """Load and normalize a deal-registration export from a file."""
     headers, rows = _read_rows(path)
+    return load_rows(
+        rows, headers=headers, mapping_overrides=mapping_overrides,
+        date_order=date_order, drop_rows_without_rep=drop_rows_without_rep,
+        source=path.name,
+    )
+
+
+def load_rows(
+    rows: Sequence[dict[str, Any]],
+    *,
+    headers: Sequence[str] | None = None,
+    mapping_overrides: dict[str, Any] | None = None,
+    date_order: str = "auto",
+    drop_rows_without_rep: bool = False,
+    source: str = "query result",
+) -> LoadResult:
+    """Normalize rows that are already in memory.
+
+    The file readers funnel into this, and so does a warehouse query, so a CSV
+    export and a SQL result are normalized by exactly the same code. Rows
+    carrying a `count` column stand for that many registrations each.
+    """
+    rows = list(rows)
+    if headers is None:
+        seen: set[str] = set()
+        headers = []
+        for r in rows:
+            for k in r:
+                if k not in seen:
+                    seen.add(k)
+                    headers.append(str(k))
+    headers = list(headers)
+
     resolved, notes = resolve_headers(headers, mapping_overrides)
     result = LoadResult(records=[], resolved_headers=resolved, headers=headers,
                         notes=notes, total_rows=len(rows))
@@ -436,9 +567,9 @@ def load(
         raise SystemExit(
             "Could not find a column for required field(s): "
             + ", ".join(missing)
-            + ".\nHeaders in the file:\n  "
+            + f".\nColumns in {source}:\n  "
             + "\n  ".join(headers)
-            + "\n\nPin the right header in config/columns.yml under `mapping:`."
+            + "\n\nPin the right one in config/columns.yml under `mapping:`."
         )
 
     def cell(row: dict[str, Any], fld: str) -> Any:
@@ -473,6 +604,19 @@ def load(
             result.skip("no owner/rep and drop_rows_without_rep is set")
             continue
 
+        weight = 1
+        if "count" in resolved:
+            raw_count = parse_amount(cell(row, "count"))
+            if raw_count is None:
+                result.skip("blank or unparseable count")
+                continue
+            weight = int(round(raw_count))
+            if weight <= 0:
+                # A zero or negative group count is meaningless here and would
+                # silently distort every share and concentration figure.
+                result.skip("count of zero or less")
+                continue
+
         result.records.append(
             Record(
                 deal_reg_id=text(row, "deal_reg_id") or f"row-{i}",
@@ -488,11 +632,72 @@ def load(
                 partner=text(row, "partner"),
                 account=text(row, "account"),
                 row_number=i,
+                weight=weight,
             )
         )
 
     result.notes.append(f"Created-date column parsed as {created_parser.inferred_order}.")
+    if "count" in resolved:
+        total = sum(r.weight for r in result.records)
+        result.notes.append(
+            f"Input is pre-aggregated: {len(result.records)} grouped rows stand for "
+            f"{total} deal registrations (via the {resolved['count']!r} column)."
+        )
     return result
+
+
+def merge(results: Sequence[LoadResult]) -> LoadResult:
+    """Combine several LoadResults into one.
+
+    Lets a large pull be fetched in chunks -- by quarter, by pod, or by however
+    a query tool paginates -- and analysed as a single window. Duplicate
+    registration ids across chunks are dropped, since overlapping date ranges
+    are the easy mistake to make when chunking and would otherwise double-count
+    silently.
+    """
+    if not results:
+        raise SystemExit("Nothing to merge: no inputs were loaded.")
+    if len(results) == 1:
+        return results[0]
+
+    merged = LoadResult(records=[], resolved_headers=dict(results[0].resolved_headers),
+                        headers=list(results[0].headers))
+    seen_ids: set[str] = set()
+    generated = 0
+    for part in results:
+        merged.total_rows += part.total_rows
+        for reason, n in part.skipped.items():
+            merged.skipped[reason] = merged.skipped.get(reason, 0) + n
+        for note in part.notes:
+            if note not in merged.notes:
+                merged.notes.append(note)
+        for fld, header in part.resolved_headers.items():
+            merged.resolved_headers.setdefault(fld, header)
+        for header in part.headers:
+            if header not in merged.headers:
+                merged.headers.append(header)
+        for rec in part.records:
+            # Ids auto-generated from row position ("row-12") collide across
+            # chunks by construction, so they can never be used for dedup.
+            if rec.deal_reg_id.startswith("row-"):
+                generated += 1
+                merged.records.append(rec)
+                continue
+            if rec.deal_reg_id in seen_ids:
+                merged.skip("duplicate registration id across inputs")
+                continue
+            seen_ids.add(rec.deal_reg_id)
+            merged.records.append(rec)
+
+    merged.notes.append(f"Merged {len(results)} inputs into {len(merged.records)} records.")
+    if generated:
+        merged.notes.append(
+            f"{generated} row(s) had no registration id, so they could not be "
+            f"de-duplicated across inputs. If your chunks overlap in date range, "
+            f"those rows are double-counted -- include an id column, or make the "
+            f"chunks disjoint."
+        )
+    return merged
 
 
 def iter_months(start: str, end: str) -> Iterator[str]:

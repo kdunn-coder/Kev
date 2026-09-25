@@ -24,7 +24,9 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from dealreg import analyze, export, metrics  # noqa: E402
-from dealreg.loader import DateParser, load, parse_amount, shift_month  # noqa: E402
+from dealreg.loader import (  # noqa: E402
+    DateParser, load, load_rows, merge, parse_amount, shift_month,
+)
 from dealreg.taxonomy import PodResolver, normalize_deal_type, normalize_stage, stage_outcome  # noqa: E402
 
 FAILED: list[str] = []
@@ -344,6 +346,143 @@ def test_end_to_end() -> None:
         check("pivot TOTAL row matches", int(dach_total_row["total"]), 27)
 
 
+def test_aggregated_input_matches_raw() -> None:
+    """A pre-aggregated source must produce exactly the raw source's numbers.
+
+    This is what makes a warehouse query usable: SQL groups the registrations
+    and returns a `count` per group, and the analysis has to be indifferent to
+    whether it received 1000 rows of 1 or 100 rows of 10.
+    """
+    section("Pre-aggregated input equals raw input")
+    raw_rows = []
+    for month, rep, n in [
+        ("2026-06", "Rep A", 5), ("2026-06", "Rep B", 3),
+        ("2026-07", "Rep A", 2), ("2026-07", "Rep B", 6),
+        ("2026-08", "Rep A", 4), ("2026-08", "Rep B", 4),
+    ]:
+        for i in range(n):
+            raw_rows.append({
+                "Created Date": f"{month}-10", "Opportunity Owner": rep,
+                "Sales Territory": "DACH", "Opportunity Type": "New Business",
+                "Stage": "2 - Approved",
+            })
+    agg_rows = [
+        {"Created Date": f"{month}-10", "Opportunity Owner": rep,
+         "Sales Territory": "DACH", "Opportunity Type": "New Business",
+         "Stage": "2 - Approved", "DEAL_REGS": n}
+        for month, rep, n in [
+            ("2026-06", "Rep A", 5), ("2026-06", "Rep B", 3),
+            ("2026-07", "Rep A", 2), ("2026-07", "Rep B", 6),
+            ("2026-08", "Rep A", 4), ("2026-08", "Rep B", 4),
+        ]
+    ]
+    cfg = {"pods": ["DACH"], "pod_aliases": {"DACH": ["dach"]}}
+
+    def analyse(rows):
+        return analyze.run(load_rows(rows), PodResolver.from_config(cfg),
+                           months=3, end_month="2026-08")
+
+    a_raw, a_agg = analyse(raw_rows), analyse(agg_rows)
+    check("raw row count", len(a_raw.pod("DACH").reps), 2)
+    check("aggregated stands for the same total",
+          a_agg.pod("DACH").total, a_raw.pod("DACH").total)
+    check("total is 24", a_agg.pod("DACH").total, 24)
+    for m in a_raw.months:
+        for rep in ("Rep A", "Rep B"):
+            check(f"{rep} {m} count matches",
+                  a_agg.pod("DACH").reps[rep].count(m),
+                  a_raw.pod("DACH").reps[rep].count(m))
+        rc, ac = a_raw.pod("DACH").concentration[m], a_agg.pod("DACH").concentration[m]
+        check(f"{m} gini matches", ac.gini, rc.gini)
+        check(f"{m} effective reps matches", ac.effective_reps, rc.effective_reps)
+    check("deal-type counts match",
+          a_agg.pod("DACH").month_deal_type[("2026-06", "New Business")],
+          a_raw.pod("DACH").month_deal_type[("2026-06", "New Business")])
+    check("quality percentages are of regs, not rows",
+          a_agg.data_quality["regs_in_window"], 24)
+    check("aggregated input is flagged", a_agg.data_quality["pre_aggregated"], True)
+    check("raw input is not flagged", a_raw.data_quality["pre_aggregated"], False)
+
+    section("Count column edge cases")
+    for bad, reason in [("0", "count of zero or less"), ("-3", "count of zero or less"),
+                        ("", "blank or unparseable count")]:
+        r = load_rows([{"Created Date": "2026-06-10", "Opportunity Owner": "X",
+                        "DEAL_REGS": bad}])
+        check(f"count {bad!r} is skipped", len(r.records), 0)
+        check(f"count {bad!r} reports why", reason in r.skipped, True)
+
+    section("Deterministic tie-breaking")
+    # An exact tie between deal types must not depend on row order: Counter's
+    # most_common breaks ties by insertion order, so the same data arriving
+    # raw vs pre-aggregated reported different "top" deal types.
+    tie = [{"Created Date": "2026-06-10", "Opportunity Owner": "Tied Rep",
+            "Sales Territory": "DACH", "Opportunity Type": t, "Stage": "Approved",
+            "DEAL_REGS": 5} for t in ("Renewal", "New Business")]
+    fwd = analyze.rep_trends(
+        analyse(tie).pod("DACH"))[0].top_deal_type
+    rev = analyze.rep_trends(
+        analyse(list(reversed(tie))).pod("DACH"))[0].top_deal_type
+    check("tie-break is stable across row order", fwd, rev)
+    check("tie-break follows canonical order", fwd, "New Business")
+
+
+def test_merge_chunks() -> None:
+    """Chunked inputs merge, and overlapping chunks do not double-count."""
+    section("Merging chunked inputs")
+    base = {"Sales Territory": "DACH", "Opportunity Type": "New Business",
+            "Stage": "Approved"}
+    q1 = load_rows([{**base, "Id": f"DR-{i}", "Created Date": "2026-06-10",
+                     "Opportunity Owner": "Rep A"} for i in range(1, 6)])
+    q2 = load_rows([{**base, "Id": f"DR-{i}", "Created Date": "2026-07-10",
+                     "Opportunity Owner": "Rep A"} for i in range(6, 11)])
+    merged = merge([q1, q2])
+    check("both chunks merged", len(merged.records), 10)
+
+    # An overlapping re-fetch must not inflate the totals.
+    overlap = load_rows([{**base, "Id": f"DR-{i}", "Created Date": "2026-07-10",
+                          "Opportunity Owner": "Rep A"} for i in range(4, 9)])
+    merged2 = merge([q1, q2, overlap])
+    check("overlapping ids de-duplicated", len(merged2.records), 10)
+    check("duplicates are reported",
+          merged2.skipped.get("duplicate registration id across inputs"), 5)
+
+    # Without ids there is nothing to de-duplicate on, so say so loudly.
+    n1 = load_rows([{**base, "Created Date": "2026-06-10", "Opportunity Owner": "R"}])
+    n2 = load_rows([{**base, "Created Date": "2026-06-10", "Opportunity Owner": "R"}])
+    m3 = merge([n1, n2])
+    check("id-less rows are kept", len(m3.records), 2)
+    check("id-less merge warns about double counting",
+          any("could not be de-duplicated" in n for n in m3.notes), True)
+
+    check("merging a single result is a no-op", merge([q1]) is q1, True)
+
+
+def test_json_input() -> None:
+    section("JSON query-result input")
+    import json as _json
+    rows = [{"CREATED_DATE": "2026-06-10", "OPPORTUNITY_OWNER": "Rep A",
+             "SALES_TERRITORY": "DACH", "DEAL_REGS": 7}]
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        # Plain list of objects.
+        (d / "a.json").write_text(_json.dumps(rows), encoding="utf-8")
+        check("list of objects", load(d / "a.json").records[0].weight, 7)
+        # Wrapped in a result envelope.
+        (d / "b.json").write_text(_json.dumps({"rows": rows}), encoding="utf-8")
+        check("{'rows': [...]} envelope", load(d / "b.json").records[0].weight, 7)
+        (d / "c.json").write_text(_json.dumps({"data": rows}), encoding="utf-8")
+        check("{'data': [...]} envelope", load(d / "c.json").records[0].weight, 7)
+        # Columns + positional tuples.
+        (d / "e.json").write_text(_json.dumps({
+            "columns": ["CREATED_DATE", "OPPORTUNITY_OWNER", "SALES_TERRITORY", "DEAL_REGS"],
+            "rows": [["2026-06-10", "Rep A", "DACH", 7]]}), encoding="utf-8")
+        check("columns + tuple rows", load(d / "e.json").records[0].weight, 7)
+        # Newline-delimited.
+        (d / "f.jsonl").write_text("\n".join(_json.dumps(r) for r in rows), encoding="utf-8")
+        check("newline-delimited JSON", load(d / "f.jsonl").records[0].weight, 7)
+        check("owner read from JSON", load(d / "a.json").records[0].rep, "Rep A")
+
+
 def test_cli_runs() -> None:
     section("CLI smoke test")
     sample = ROOT / "samples" / "sample_deal_registrations.csv"
@@ -380,6 +519,9 @@ def main() -> int:
     test_pod_resolution()
     test_parsing()
     test_end_to_end()
+    test_aggregated_input_matches_raw()
+    test_merge_chunks()
+    test_json_input()
     test_cli_runs()
     print("\n" + "=" * 60)
     if FAILED:
