@@ -1,0 +1,16 @@
+# Analysis outputs are regenerated from the export; never commit them.
+out/
+*.out/
+
+# CRM exports contain customer and partner names. Keep them out of git.
+data/
+*.xlsx
+*.xlsm
+*.csv
+!samples/sample_deal_registrations.csv
+
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.DS_Store

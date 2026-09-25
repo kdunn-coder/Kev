@@ -1,0 +1,6 @@
+# The analysis itself runs on the Python standard library.
+PyYAML>=6.0        # reads config/pods.yml and config/columns.yml
+
+# Only needed to read .xlsx / .xlsm exports directly. Skip it if you save the
+# Salesforce export as CSV.
+openpyxl>=3.1

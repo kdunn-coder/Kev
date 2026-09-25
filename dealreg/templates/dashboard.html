@@ -1,0 +1,1224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Deal Reg Allocation</title>
+<style>
+  /* Palette: the validated dataviz reference instance. Light and dark are
+     separately stepped sets, not an automatic flip. Series slots 1-3 carry the
+     three pods (validated all-pairs, both modes); slots 1-5 carry the deal-type
+     and outcome stacks (validated adjacent, both modes). */
+  :root {
+    color-scheme: light;
+    --surface-1:   #fcfcfb;
+    --page:        #f9f9f7;
+    --ink:         #0b0b0b;
+    --ink-2:       #52514e;
+    --muted:       #898781;
+    --grid:        #e1e0d9;
+    --axis:        #c3c2b7;
+    --border:      rgba(11,11,11,0.10);
+    --good:        #006300;
+    --bad:         #d03b3b;
+
+    --s1: #2a78d6;  --s2: #eb6834;  --s3: #1baf7a;
+    --s4: #eda100;  --s5: #e87ba4;
+
+    /* Sequential blue ramp, for the allocation-share heatmap. */
+    --q0: #f0efec;  --q1: #cde2fb;  --q2: #9ec5f4;  --q3: #6da7ec;
+    --q4: #3987e5;  --q5: #256abf;  --q6: #184f95;  --q7: #0d366b;
+
+    /* Dumbbell: one hue, two shades (ordinal floor step 250 on light). */
+    --then: #86b6ef;  --now: #2a78d6;
+
+    --radius: 10px;
+    --font: system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) {
+      color-scheme: dark;
+      --surface-1: #1a1a19;
+      --page:      #0d0d0d;
+      --ink:       #ffffff;
+      --ink-2:     #c3c2b7;
+      --muted:     #898781;
+      --grid:      #2c2c2a;
+      --axis:      #383835;
+      --border:    rgba(255,255,255,0.10);
+      --good:      #0ca30c;
+      --bad:       #d03b3b;
+      --s1: #3987e5;  --s2: #d95926;  --s3: #199e70;
+      --s4: #c98500;  --s5: #d55181;
+      --q0: #383835;  --q1: #104281;  --q2: #184f95;  --q3: #256abf;
+      --q4: #3987e5;  --q5: #5598e7;  --q6: #86b6ef;  --q7: #b7d3f6;
+      --then: #184f95; --now: #3987e5;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --surface-1: #1a1a19;
+    --page:      #0d0d0d;
+    --ink:       #ffffff;
+    --ink-2:     #c3c2b7;
+    --muted:     #898781;
+    --grid:      #2c2c2a;
+    --axis:      #383835;
+    --border:    rgba(255,255,255,0.10);
+    --good:      #0ca30c;
+    --bad:       #d03b3b;
+    --s1: #3987e5;  --s2: #d95926;  --s3: #199e70;
+    --s4: #c98500;  --s5: #d55181;
+    --q0: #383835;  --q1: #104281;  --q2: #184f95;  --q3: #256abf;
+    --q4: #3987e5;  --q5: #5598e7;  --q6: #86b6ef;  --q7: #b7d3f6;
+    --then: #184f95; --now: #3987e5;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--page); color: var(--ink);
+    font: 15px/1.55 var(--font);
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1240px; margin: 0 auto; padding: 28px 16px 72px; }
+
+  header h1 { font-size: 24px; margin: 0 0 6px; letter-spacing: -0.01em; }
+  header .sub { color: var(--ink-2); font-size: 14px; margin: 0; }
+  .synthetic {
+    margin: 16px 0 0; padding: 12px 14px; border-radius: var(--radius);
+    background: color-mix(in srgb, var(--s4) 12%, var(--surface-1));
+    border: 1px solid var(--border); font-size: 13.5px; color: var(--ink);
+  }
+
+  /* One filter row, above everything it scopes. */
+  .filters {
+    display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: flex-end;
+    margin: 22px 0 18px; padding: 14px; background: var(--surface-1);
+    border: 1px solid var(--border); border-radius: var(--radius);
+  }
+  .field { display: flex; flex-direction: column; gap: 5px; }
+  .field label { font-size: 11.5px; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); }
+  .field select, .field button {
+    font: 14px var(--font); color: var(--ink); background: var(--surface-1);
+    border: 1px solid var(--axis); border-radius: 7px; padding: 7px 10px; min-height: 36px;
+  }
+  .field button { cursor: pointer; }
+  .field button:hover { background: color-mix(in srgb, var(--ink) 5%, var(--surface-1)); }
+  .spacer { flex: 1 1 auto; }
+
+  .card {
+    background: var(--surface-1); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 18px; margin: 0 0 18px;
+  }
+  .card > h2 { font-size: 16px; margin: 0 0 3px; }
+  .card > h3 { font-size: 14.5px; margin: 0 0 3px; }
+  .card .note { color: var(--ink-2); font-size: 13px; margin: 0 0 14px; }
+  .card .note:last-child { margin-bottom: 0; }
+
+  .pod-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin: 30px 0 14px; }
+  .pod-head h2 { font-size: 19px; margin: 0; }
+  .pod-head .keydot { width: 11px; height: 11px; border-radius: 50%; flex: none; }
+
+  /* KPI row of stat tiles. */
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(178px, 1fr)); gap: 12px; }
+  .kpi { background: var(--surface-1); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; }
+  .kpi .label { font-size: 12px; color: var(--muted); margin: 0 0 6px; }
+  .kpi .value { font-size: 26px; font-weight: 600; letter-spacing: -0.02em; line-height: 1.1; }
+  .kpi .delta { font-size: 12.5px; color: var(--ink-2); margin-top: 5px; }
+  .kpi .delta .up { color: var(--good); }
+  .kpi .delta .down { color: var(--bad); }
+  .kpi .delta .flat { color: var(--ink-2); }
+
+  figure { margin: 0; }
+  figcaption { font-size: 13px; color: var(--ink-2); margin: 0 0 12px; }
+  .chart { position: relative; width: 100%; }
+  svg { display: block; width: 100%; height: auto; overflow: visible; }
+  .gridline, .axisline { stroke: var(--grid); stroke-width: 1; shape-rendering: crispEdges; }
+  .axisline { stroke: var(--axis); }
+  .tick { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+  .axtitle { fill: var(--muted); font-size: 11px; }
+  .dlabel { fill: var(--ink); font-size: 11.5px; font-weight: 600; }
+  .series-line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+  .endmark { stroke: var(--surface-1); stroke-width: 2; }
+  .hit { fill: transparent; cursor: crosshair; }
+  .crosshair { stroke: var(--axis); stroke-width: 1; pointer-events: none; opacity: 0; }
+  .cell { stroke: var(--surface-1); stroke-width: 2; cursor: pointer; }
+  .cell:hover, .cell:focus { stroke: var(--ink); stroke-width: 2; outline: none; }
+  .seg { stroke: var(--surface-1); stroke-width: 2; cursor: pointer; }
+  .seg:hover, .seg:focus { opacity: .82; outline: none; }
+  .barhit { fill: transparent; cursor: pointer; }
+  .rowlabel { fill: var(--ink-2); font-size: 11.5px; }
+  .rowlabel.partial { fill: var(--muted); font-style: italic; }
+  .dumb-track { stroke: var(--grid); stroke-width: 1; }
+  .dumb-link { stroke: var(--axis); stroke-width: 2; }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 8px 16px; margin: 12px 0 0; padding: 0; list-style: none; }
+  .legend li { display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--ink-2); }
+  .legend .sw { width: 13px; height: 13px; border-radius: 3px; flex: none; }
+  .legend .ln { width: 16px; height: 2px; border-radius: 2px; flex: none; }
+
+  .tt {
+    position: absolute; pointer-events: none; opacity: 0; z-index: 20;
+    background: var(--surface-1); border: 1px solid var(--border);
+    border-radius: 8px; padding: 9px 11px; font-size: 12.5px; min-width: 138px;
+    box-shadow: 0 6px 20px rgba(0,0,0,.14); transition: opacity .1s;
+  }
+  .tt .tt-h { font-size: 11.5px; color: var(--muted); margin-bottom: 6px; }
+  .tt .tt-r { display: flex; align-items: center; gap: 7px; margin-top: 3px; }
+  .tt .tt-r .ln { width: 14px; height: 2px; border-radius: 2px; flex: none; }
+  .tt .tt-r .v { font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; }
+  .tt .tt-r .n { color: var(--ink-2); }
+
+  .tablewrap { margin-top: 14px; overflow-x: auto; }
+  details.tv { margin-top: 12px; }
+  details.tv summary {
+    cursor: pointer; font-size: 12.5px; color: var(--ink-2); padding: 5px 0;
+    min-height: 28px; display: flex; align-items: center;
+  }
+  details.tv summary:hover { color: var(--ink); }
+  table { border-collapse: collapse; font-size: 12.5px; width: 100%; }
+  th, td { padding: 6px 9px; text-align: right; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; position: sticky; left: 0; background: var(--surface-1); }
+  thead th { color: var(--muted); font-weight: 500; font-size: 11.5px; }
+  tbody td { font-variant-numeric: tabular-nums; color: var(--ink-2); }
+  tbody tr:hover td { background: color-mix(in srgb, var(--ink) 4%, var(--surface-1)); }
+  tfoot td { font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; }
+
+  .scale { display: flex; align-items: center; gap: 8px; margin-top: 12px; font-size: 12px; color: var(--ink-2); }
+  .scale .ramp { display: flex; }
+  .scale .ramp i { width: 22px; height: 11px; }
+
+  .quality dl { display: grid; grid-template-columns: 1fr auto; gap: 4px 16px; margin: 0; font-size: 13px; }
+  .quality dt { color: var(--ink-2); }
+  .quality dd { margin: 0; font-variant-numeric: tabular-nums; }
+  .quality .warn { color: var(--bad); font-weight: 600; }
+  .quality h3 { font-size: 13.5px; margin: 16px 0 6px; }
+  .quality ul { margin: 0; padding-left: 20px; font-size: 13px; color: var(--ink-2); }
+
+  @media (max-width: 640px) {
+    .wrap { padding: 20px 16px 56px; }
+    header h1 { font-size: 20px; }
+    .kpi .value { font-size: 22px; }
+    .filters { padding: 12px; }
+    .field, .field select { width: 100%; }
+  }
+  @media print {
+    body { background: #fff; }
+    .filters, details.tv summary { display: none; }
+    details.tv[open] > *:not(summary) { display: block; }
+    .card { break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Deal registration allocation per rep &mdash; EMEA pods</h1>
+    <p class="sub" id="sub"></p>
+  </header>
+
+  <div id="synthetic-banner"></div>
+
+  <div class="filters">
+    <div class="field">
+      <label for="f-basis">Allocated to</label>
+      <select id="f-basis">
+        <option value="rep">Sales rep / AE (record owner)</option>
+        <option value="isr">ISR</option>
+      </select>
+    </div>
+    <div class="field">
+      <label for="f-pod">Pod</label>
+      <select id="f-pod"><option value="__all__">All pods</option></select>
+    </div>
+    <div class="field">
+      <label for="f-metric">Overview metric</label>
+      <select id="f-metric">
+        <option value="monthly">Deal registrations per month</option>
+        <option value="effective_reps">Effective reps sharing the regs</option>
+        <option value="active_reps">Reps receiving regs</option>
+        <option value="mean_per_rep">Regs per active rep</option>
+        <option value="gini">Gini (allocation unevenness)</option>
+        <option value="top1_share">Top rep's share (%)</option>
+      </select>
+    </div>
+    <div class="spacer"></div>
+    <div class="field">
+      <label for="f-theme">Theme</label>
+      <button id="f-theme" type="button">Auto</button>
+    </div>
+  </div>
+
+  <div id="reading" class="card"></div>
+  <div id="overview"></div>
+  <div id="pods"></div>
+  <div id="quality"></div>
+</div>
+
+<script id="payload" type="application/json">__DASHBOARD_DATA__</script>
+<script>
+(function () {
+  "use strict";
+
+  const DATA = JSON.parse(document.getElementById("payload").textContent);
+  const MONTHS = DATA.meta.months;
+  const NM = MONTHS.length;
+  const SERIES = ["--s1", "--s2", "--s3", "--s4", "--s5"];
+  const RAMP = ["--q0","--q1","--q2","--q3","--q4","--q5","--q6","--q7"];
+
+  const state = {
+    basis: "rep",
+    pod: "__all__",
+    metric: "monthly",
+  };
+
+  // ---- helpers -----------------------------------------------------------
+  const cssv = (name) => getComputedStyle(document.documentElement).getPointerCapture
+    ? getComputedStyle(document.documentElement).getPropertyValue(name).trim()
+    : "";
+  const sv = (name) => "var(" + name + ")";
+  const el = (tag, cls, text) => {
+    const n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text !== undefined && text !== null) n.textContent = String(text);
+    return n;
+  };
+  const svgEl = (tag, attrs) => {
+    const n = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    for (const k in attrs) if (attrs[k] !== undefined && attrs[k] !== null) n.setAttribute(k, attrs[k]);
+    return n;
+  };
+  const fmtInt = (v) => (v === null || v === undefined) ? "—" : Math.round(v).toLocaleString();
+  const fmt1 = (v) => (v === null || v === undefined) ? "—" : v.toFixed(1);
+  const fmt2 = (v) => (v === null || v === undefined) ? "—" : v.toFixed(2);
+  const fmt3 = (v) => (v === null || v === undefined) ? "—" : v.toFixed(3);
+  const pct = (v, d) => (v === null || v === undefined) ? "—" : v.toFixed(d === undefined ? 1 : d) + "%";
+  const signed = (v, d, suffix) => {
+    if (v === null || v === undefined) return "—";
+    const s = v >= 0 ? "+" : "−";
+    return s + Math.abs(v).toFixed(d === undefined ? 1 : d) + (suffix || "");
+  };
+  const shortMonth = (m) => {
+    const [y, mo] = m.split("-");
+    return ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][+mo - 1] + " " + y.slice(2);
+  };
+  const niceMax = (v) => {
+    if (!(v > 0)) return 1;
+    const mag = Math.pow(10, Math.floor(Math.log10(v)));
+    for (const step of [1, 1.5, 2, 2.5, 3, 4, 5, 7.5, 10]) {
+      if (v <= step * mag) return step * mag;
+    }
+    return 10 * mag;
+  };
+  // Ticks land on clean numbers rather than max/n, which produces values like
+  // 7.5 and 22.5. Among the clean step sizes that give a sensible number of
+  // intervals, pick the one whose top tick sits closest above the data, so the
+  // plot does not carry dead headroom. Returns ascending values from 0 up.
+  const niceTicks = (v, target) => {
+    if (!(v > 0)) return [0, 1];
+    const t = target || 4;
+    const mag = Math.pow(10, Math.floor(Math.log10(v / t)));
+    let best = null;
+    for (const m of [mag, mag * 10]) {
+      for (const s of [1, 2, 2.5, 5]) {
+        const step = s * m;
+        const n = Math.ceil(v / step - 1e-9);
+        if (n < 3 || n > 8) continue;
+        const score = step * n + Math.abs(n - t) * step * 0.25;
+        if (best === null || score < best.score) best = { step, n, score };
+      }
+    }
+    if (best === null) best = { step: v / t, n: t };
+    const out = [];
+    for (let i = 0; i <= best.n; i++) out.push(best.step * i);
+    return out;
+  };
+  const activePods = () => {
+    const pods = state.basis === "isr" ? DATA.isr_pods : DATA.pods;
+    const named = pods.filter((p) => p.pod !== DATA.meta.unassigned_label);
+    if (state.pod === "__all__") return named;
+    return named.filter((p) => p.pod === state.pod);
+  };
+  const podColorIndex = (name) => {
+    const all = (state.basis === "isr" ? DATA.isr_pods : DATA.pods)
+      .filter((p) => p.pod !== DATA.meta.unassigned_label);
+    const i = all.findIndex((p) => p.pod === name);
+    return i < 0 ? 0 : i % SERIES.length;   // color follows the pod, never its filtered rank
+  };
+
+  // ---- tooltip -----------------------------------------------------------
+  function makeTooltip(container) {
+    const tip = el("div", "tt");
+    tip.setAttribute("role", "status");
+    container.appendChild(tip);
+    return {
+      show(x, y, heading, rows) {
+        tip.textContent = "";
+        const h = el("div", "tt-h", heading);
+        tip.appendChild(h);
+        rows.forEach((r) => {
+          const row = el("div", "tt-r");
+          if (r.color) {
+            const k = el("span", "ln");
+            k.style.background = r.color;
+            row.appendChild(k);
+          }
+          row.appendChild(el("span", "v", r.value));
+          if (r.name) row.appendChild(el("span", "n", r.name));
+          tip.appendChild(row);
+        });
+        tip.style.opacity = "1";
+        const cw = container.clientWidth;
+        const tw = tip.offsetWidth;
+        let left = x + 14;
+        if (left + tw > cw) left = Math.max(0, x - tw - 14);
+        tip.style.left = left + "px";
+        tip.style.top = Math.max(0, y - 10) + "px";
+      },
+      hide() { tip.style.opacity = "0"; },
+    };
+  }
+
+  function legendList(items, kind) {
+    const ul = el("ul", "legend");
+    items.forEach((it) => {
+      const li = el("li");
+      const mark = el("span", kind === "line" ? "ln" : "sw");
+      mark.style.background = it.color;
+      li.appendChild(mark);
+      li.appendChild(el("span", null, it.label));
+      ul.appendChild(li);
+    });
+    return ul;
+  }
+
+  function tableView(summaryText, headers, rows, footer) {
+    const d = el("details", "tv");
+    d.appendChild(el("summary", null, summaryText));
+    const wrap = el("div", "tablewrap");
+    const t = el("table");
+    const thead = el("thead");
+    const htr = el("tr");
+    headers.forEach((h) => htr.appendChild(el("th", null, h)));
+    thead.appendChild(htr);
+    t.appendChild(thead);
+    const tb = el("tbody");
+    rows.forEach((r) => {
+      const tr = el("tr");
+      r.forEach((c) => tr.appendChild(el("td", null, c)));
+      tb.appendChild(tr);
+    });
+    t.appendChild(tb);
+    if (footer) {
+      const tf = el("tfoot");
+      const tr = el("tr");
+      footer.forEach((c) => tr.appendChild(el("td", null, c)));
+      tf.appendChild(tr);
+      t.appendChild(tf);
+    }
+    wrap.appendChild(t);
+    d.appendChild(wrap);
+    return d;
+  }
+
+  // ---- multi-series line chart ------------------------------------------
+  // Crosshair snaps to the nearest month and the readout lists every series,
+  // so the pointer never has to land on a 2px stroke.
+  function lineChart(opts) {
+    const { series, yLabel, valueFmt, integer } = opts;
+    const W = 1000, H = 312;
+    // Top padding leaves the axis title its own line, clear of the topmost tick.
+    const pad = { t: 30, r: 74, b: 40, l: 54 };
+    const iw = W - pad.l - pad.r, ih = H - pad.t - pad.b;
+
+    const holder = el("div", "chart");
+    const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, role: "img" });
+    svg.setAttribute("aria-label", opts.ariaLabel || yLabel);
+
+    let maxV = 0;
+    series.forEach((s) => s.values.forEach((v) => { if (v !== null && v > maxV) maxV = v; }));
+    const ticks = niceTicks(maxV, 5);
+    const yMax = ticks[ticks.length - 1];
+    const x = (i) => pad.l + (NM === 1 ? iw / 2 : (i / (NM - 1)) * iw);
+    const y = (v) => pad.t + ih - (v / yMax) * ih;
+
+    ticks.forEach((v, i) => {
+      const yy = y(v);
+      svg.appendChild(svgEl("line", {
+        class: i === 0 ? "axisline" : "gridline",
+        x1: pad.l, x2: pad.l + iw, y1: yy, y2: yy,
+      }));
+      const tk = svgEl("text", { class: "tick", x: pad.l - 9, y: yy + 4, "text-anchor": "end" });
+      tk.textContent = (integer || v % 1 === 0)
+        ? Math.round(v).toLocaleString() : v.toFixed(1);
+      svg.appendChild(tk);
+    });
+    // Axis title sits left-anchored above the plot. Right-anchoring it to the
+    // tick column pushes a long label off the left edge of the viewBox.
+    const yt = svgEl("text", { class: "axtitle", x: 0, y: 11, "text-anchor": "start" });
+    yt.textContent = yLabel;
+    svg.appendChild(yt);
+
+    // Label roughly every third month so ticks never collide.
+    const every = NM > 18 ? 3 : (NM > 9 ? 2 : 1);
+    MONTHS.forEach((m, i) => {
+      if (i % every !== 0 && i !== NM - 1) return;
+      const tk = svgEl("text", {
+        class: "tick", x: x(i), y: pad.t + ih + 18, "text-anchor": "middle",
+      });
+      tk.textContent = shortMonth(m);
+      svg.appendChild(tk);
+    });
+
+    const cross = svgEl("line", { class: "crosshair", y1: pad.t, y2: pad.t + ih });
+    svg.appendChild(cross);
+
+    const endpoints = [];
+    series.forEach((s) => {
+      // Break the path across gaps rather than interpolating through them.
+      let d = "", pen = false;
+      s.values.forEach((v, i) => {
+        if (v === null || v === undefined) { pen = false; return; }
+        d += (pen ? " L" : " M") + x(i) + " " + y(v);
+        pen = true;
+      });
+      if (d) svg.appendChild(svgEl("path", { class: "series-line", d: d.trim(), stroke: s.color }));
+
+      let last = -1;
+      s.values.forEach((v, i) => { if (v !== null && v !== undefined) last = i; });
+      if (last >= 0) {
+        svg.appendChild(svgEl("circle", {
+          class: "endmark", cx: x(last), cy: y(s.values[last]), r: 4.5, fill: s.color,
+        }));
+        endpoints.push({ i: last, v: s.values[last] });
+      }
+    });
+
+    // Selective direct labels: endpoints only, and only where the series have
+    // separated enough at the right edge that a label stays attached to its own
+    // line. Nudging colliding labels apart detaches them and reads as noise, so
+    // when they would collide the legend, tooltip and table view carry the
+    // values instead.
+    const LABEL_MIN_GAP = 15;
+    const ys = endpoints.map((e) => y(e.v)).sort((a, b) => a - b);
+    let collide = series.length > 3;
+    for (let i = 1; i < ys.length; i++) {
+      if (ys[i] - ys[i - 1] < LABEL_MIN_GAP) collide = true;
+    }
+    if (!collide) {
+      endpoints.forEach((e) => {
+        const lb = svgEl("text", { class: "dlabel", x: x(e.i) + 10, y: y(e.v) + 4 });
+        lb.textContent = valueFmt(e.v);
+        svg.appendChild(lb);
+      });
+    }
+
+    const hit = svgEl("rect", {
+      class: "hit", x: pad.l, y: pad.t, width: iw, height: ih, tabindex: "0",
+    });
+    svg.appendChild(hit);
+    holder.appendChild(svg);
+    const tip = makeTooltip(holder);
+
+    let focusIdx = 0;
+    const showAt = (i, clientX, clientY) => {
+      focusIdx = i;
+      cross.setAttribute("x1", x(i));
+      cross.setAttribute("x2", x(i));
+      cross.style.opacity = "1";
+      const rect = holder.getBoundingClientRect();
+      const px = clientX !== undefined ? clientX - rect.left : (x(i) / W) * rect.width;
+      const py = clientY !== undefined ? clientY - rect.top : rect.height / 2;
+      tip.show(px, py, shortMonth(MONTHS[i]), series.map((s) => ({
+        color: s.color,
+        value: valueFmt(s.values[i]),
+        name: s.label,
+      })));
+    };
+    const idxFromEvent = (ev) => {
+      const rect = holder.getBoundingClientRect();
+      const rel = ((ev.clientX - rect.left) / rect.width) * W;
+      const i = Math.round(((rel - pad.l) / iw) * (NM - 1));
+      return Math.max(0, Math.min(NM - 1, i));
+    };
+    hit.addEventListener("pointermove", (ev) => showAt(idxFromEvent(ev), ev.clientX, ev.clientY));
+    hit.addEventListener("pointerleave", () => { cross.style.opacity = "0"; tip.hide(); });
+    hit.addEventListener("focus", () => showAt(focusIdx));
+    hit.addEventListener("blur", () => { cross.style.opacity = "0"; tip.hide(); });
+    hit.addEventListener("keydown", (ev) => {
+      if (ev.key === "ArrowRight") { showAt(Math.min(NM - 1, focusIdx + 1)); ev.preventDefault(); }
+      if (ev.key === "ArrowLeft") { showAt(Math.max(0, focusIdx - 1)); ev.preventDefault(); }
+    });
+    return holder;
+  }
+
+  // ---- stacked columns ---------------------------------------------------
+  // 2px surface gap between segments; interior segments carry no inline label
+  // (they rarely fit) so legend + tooltip + table view carry the values.
+  function stackedColumns(categories, seriesMap, colors) {
+    const W = 1000, H = 260;
+    const pad = { t: 14, r: 14, b: 38, l: 44 };
+    const iw = W - pad.l - pad.r, ih = H - pad.t - pad.b;
+    const totals = MONTHS.map((_, i) =>
+      categories.reduce((a, c) => a + (seriesMap[c][i] || 0), 0));
+    const ticks = niceTicks(Math.max(1, ...totals), 4);
+    const yMax = ticks[ticks.length - 1];
+    const band = iw / NM;
+    const bw = Math.min(24, band * 0.62);
+
+    const holder = el("div", "chart");
+    const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, role: "img" });
+    svg.setAttribute("aria-label", "Monthly mix, stacked columns");
+
+    ticks.forEach((v, i) => {
+      const yy = pad.t + ih - (v / yMax) * ih;
+      svg.appendChild(svgEl("line", {
+        class: i === 0 ? "axisline" : "gridline", x1: pad.l, x2: pad.l + iw, y1: yy, y2: yy,
+      }));
+      const tk = svgEl("text", { class: "tick", x: pad.l - 8, y: yy + 4, "text-anchor": "end" });
+      tk.textContent = Math.round(v).toLocaleString();
+      svg.appendChild(tk);
+    });
+    const every = NM > 18 ? 3 : 2;
+    MONTHS.forEach((m, i) => {
+      if (i % every !== 0 && i !== NM - 1) return;
+      const tk = svgEl("text", {
+        class: "tick", x: pad.l + band * i + band / 2, y: pad.t + ih + 17, "text-anchor": "middle",
+      });
+      tk.textContent = shortMonth(m);
+      svg.appendChild(tk);
+    });
+
+    const tip = makeTooltip(holder);
+    MONTHS.forEach((m, i) => {
+      const cx = pad.l + band * i + band / 2;
+      let acc = 0;
+      categories.forEach((c, ci) => {
+        const v = seriesMap[c][i] || 0;
+        if (!v) return;
+        const y0 = pad.t + ih - ((acc + v) / yMax) * ih;
+        const y1 = pad.t + ih - (acc / yMax) * ih;
+        const h = Math.max(0.5, y1 - y0 - 2);   // the 2px surface gap
+        svg.appendChild(svgEl("rect", {
+          class: "seg", x: cx - bw / 2, y: y0, width: bw, height: h,
+          fill: sv(colors[ci % colors.length]), rx: 0,
+        }));
+        acc += v;
+      });
+      // One hit target per column, showing every category at that month.
+      const hit = svgEl("rect", {
+        class: "barhit", x: pad.l + band * i, y: pad.t, width: band, height: ih, tabindex: "0",
+      });
+      const total = totals[i];
+      const show = (ev) => {
+        const rect = holder.getBoundingClientRect();
+        const px = ev && ev.clientX !== undefined ? ev.clientX - rect.left : (cx / W) * rect.width;
+        const py = ev && ev.clientY !== undefined ? ev.clientY - rect.top : rect.height / 2;
+        const rows = categories
+          .map((c, ci) => ({ c, ci, v: seriesMap[c][i] || 0 }))
+          .filter((r) => r.v > 0)
+          .map((r) => ({
+            color: sv(colors[r.ci % colors.length]),
+            value: r.v + (total ? " (" + Math.round(r.v / total * 100) + "%)" : ""),
+            name: r.c,
+          }));
+        rows.push({ color: null, value: String(total), name: "total" });
+        tip.show(px, py, shortMonth(m), rows);
+      };
+      hit.addEventListener("pointermove", show);
+      hit.addEventListener("pointerleave", () => tip.hide());
+      hit.addEventListener("focus", () => show(null));
+      hit.addEventListener("blur", () => tip.hide());
+      svg.appendChild(hit);
+    });
+
+    holder.appendChild(svg);
+    return holder;
+  }
+
+  // ---- allocation-share heatmap -----------------------------------------
+  // Sequential one-hue ramp: magnitude, so more-is-darker. A bin of -1 means
+  // the pod itself had no regs that month, which is painted as bare surface so
+  // "nothing to allocate" never looks like "this rep got nothing".
+  const SHARE_BINS = [0, 2, 5, 10, 15, 22, 30, 40];
+  const binOf = (v) => {
+    if (v === null || v === undefined) return -1;
+    let b = 0;
+    for (let i = 0; i < SHARE_BINS.length; i++) if (v >= SHARE_BINS[i]) b = i;
+    return b;
+  };
+
+  function shareHeatmap(pod) {
+    const reps = pod.reps;
+    const rowH = 22, labelW = 168;
+    const W = 1000;
+    const pad = { t: 12, r: 12, b: 34, l: labelW };
+    const iw = W - pad.l - pad.r;
+    const H = pad.t + reps.length * rowH + pad.b;
+    const cw = iw / NM;
+
+    const holder = el("div", "chart");
+    const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, role: "img" });
+    svg.setAttribute("aria-label", "Share of pod deal registrations by rep and month");
+
+    const tip = makeTooltip(holder);
+    reps.forEach((r, ri) => {
+      const yy = pad.t + ri * rowH;
+      const lab = svgEl("text", {
+        class: "rowlabel" + (r.full_window === false ? " partial" : ""),
+        x: pad.l - 10, y: yy + rowH / 2 + 4, "text-anchor": "end",
+      });
+      lab.textContent = r.rep.length > 26 ? r.rep.slice(0, 25) + "…" : r.rep;
+      const t = svgEl("title");
+      t.textContent = r.rep + (r.tenure_flag ? " — " + r.tenure_flag : "");
+      lab.appendChild(t);
+      svg.appendChild(lab);
+
+      MONTHS.forEach((m, i) => {
+        const share = r.share[i];
+        const b = binOf(share);
+        const cell = svgEl("rect", {
+          class: "cell", x: pad.l + i * cw, y: yy, width: cw, height: rowH,
+          fill: sv(b < 0 ? "--surface-1" : RAMP[b]), tabindex: "0",
+        });
+        const show = (ev) => {
+          const rect = holder.getBoundingClientRect();
+          const px = ev && ev.clientX !== undefined ? ev.clientX - rect.left
+            : ((pad.l + i * cw) / W) * rect.width;
+          const py = ev && ev.clientY !== undefined ? ev.clientY - rect.top
+            : (yy / H) * rect.height;
+          tip.show(px, py, r.rep + " · " + shortMonth(m), [
+            { value: fmtInt(r.monthly[i]), name: "deal regs" },
+            { value: share === null ? "—" : pct(share), name: "of pod that month" },
+            { value: fmtInt(pod.monthly[i]), name: "pod total" },
+          ]);
+        };
+        cell.addEventListener("pointermove", show);
+        cell.addEventListener("pointerleave", () => tip.hide());
+        cell.addEventListener("focus", () => show(null));
+        cell.addEventListener("blur", () => tip.hide());
+        svg.appendChild(cell);
+      });
+    });
+
+    const every = NM > 18 ? 3 : 2;
+    MONTHS.forEach((m, i) => {
+      if (i % every !== 0 && i !== NM - 1) return;
+      const tk = svgEl("text", {
+        class: "tick", x: pad.l + i * cw + cw / 2,
+        y: pad.t + reps.length * rowH + 17, "text-anchor": "middle",
+      });
+      tk.textContent = shortMonth(m);
+      svg.appendChild(tk);
+    });
+
+    holder.appendChild(svg);
+
+    const scale = el("div", "scale");
+    scale.appendChild(el("span", null, "Share of pod"));
+    const ramp = el("div", "ramp");
+    RAMP.forEach((c, i) => {
+      const i2 = el("i");
+      i2.style.background = sv(c);
+      i2.title = i === 0 ? "0–1%" : SHARE_BINS[i] + "%+";
+      ramp.appendChild(i2);
+    });
+    scale.appendChild(ramp);
+    scale.appendChild(el("span", null, "0% → 40%+"));
+    holder.appendChild(scale);
+    return holder;
+  }
+
+  // ---- dumbbell: first 12mo vs last 12mo share --------------------------
+  function dumbbell(pod) {
+    const reps = pod.reps.filter((r) => r.h1_share !== null && r.h2_share !== null);
+    if (!reps.length) return null;
+    const rowH = 26, labelW = 168;
+    const W = 1000;
+    const pad = { t: 14, r: 56, b: 34, l: labelW };
+    const iw = W - pad.l - pad.r;
+    const H = pad.t + reps.length * rowH + pad.b;
+    const ticks = niceTicks(Math.max(1, ...reps.flatMap((r) => [r.h1_share, r.h2_share])), 4);
+    const maxV = ticks[ticks.length - 1];
+    const x = (v) => pad.l + (v / maxV) * iw;
+
+    const holder = el("div", "chart");
+    const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, role: "img" });
+    svg.setAttribute("aria-label", "Share of pod deal registrations, first 12 months versus last 12 months, per rep");
+
+    ticks.forEach((v, i) => {
+      svg.appendChild(svgEl("line", {
+        class: i === 0 ? "axisline" : "gridline",
+        x1: x(v), x2: x(v), y1: pad.t, y2: pad.t + reps.length * rowH,
+      }));
+      const tk = svgEl("text", {
+        class: "tick", x: x(v), y: pad.t + reps.length * rowH + 17, "text-anchor": "middle",
+      });
+      tk.textContent = (v % 1 === 0 ? v.toFixed(0) : v.toFixed(1)) + "%";
+      svg.appendChild(tk);
+    });
+
+    const tip = makeTooltip(holder);
+    reps.forEach((r, ri) => {
+      const cy = pad.t + ri * rowH + rowH / 2;
+      // Italic marks a partial window here too, so the same rep reads the same
+      // way in the heatmap and in this chart.
+      const lab = svgEl("text", {
+        class: "rowlabel" + (r.full_window === false ? " partial" : ""),
+        x: pad.l - 10, y: cy + 4, "text-anchor": "end",
+      });
+      lab.textContent = r.rep.length > 26 ? r.rep.slice(0, 25) + "…" : r.rep;
+      const lt = svgEl("title");
+      lt.textContent = r.rep + (r.tenure_flag ? " — " + r.tenure_flag : "");
+      lab.appendChild(lt);
+      svg.appendChild(lab);
+
+      svg.appendChild(svgEl("line", {
+        class: "dumb-link", x1: x(r.h1_share), x2: x(r.h2_share), y1: cy, y2: cy,
+      }));
+      svg.appendChild(svgEl("circle", {
+        class: "endmark", cx: x(r.h1_share), cy, r: 4.5, fill: sv("--then"),
+      }));
+      svg.appendChild(svgEl("circle", {
+        class: "endmark", cx: x(r.h2_share), cy, r: 4.5, fill: sv("--now"),
+      }));
+      const lb = svgEl("text", {
+        class: "dlabel", x: Math.max(x(r.h1_share), x(r.h2_share)) + 11, y: cy + 4,
+      });
+      lb.textContent = signed(r.share_delta_pp, 1, " pp");
+      svg.appendChild(lb);
+
+      const hit = svgEl("rect", {
+        class: "barhit", x: pad.l, y: pad.t + ri * rowH, width: iw, height: rowH, tabindex: "0",
+      });
+      const show = (ev) => {
+        const rect = holder.getBoundingClientRect();
+        const px = ev && ev.clientX !== undefined ? ev.clientX - rect.left : rect.width / 2;
+        const py = ev && ev.clientY !== undefined ? ev.clientY - rect.top : (cy / H) * rect.height;
+        tip.show(px, py, r.rep, [
+          { color: sv("--then"), value: pct(r.h1_share), name: "first 12mo (" + r.h1_count + " regs)" },
+          { color: sv("--now"), value: pct(r.h2_share), name: "last 12mo (" + r.h2_count + " regs)" },
+          { value: signed(r.share_delta_pp, 1, " pp"), name: "change" },
+          { value: r.tenure_flag, name: "" },
+        ]);
+      };
+      hit.addEventListener("pointermove", show);
+      hit.addEventListener("pointerleave", () => tip.hide());
+      hit.addEventListener("focus", () => show(null));
+      hit.addEventListener("blur", () => tip.hide());
+      svg.appendChild(hit);
+    });
+
+    holder.appendChild(svg);
+    holder.appendChild(legendList([
+      { color: sv("--then"), label: "First 12 months" },
+      { color: sv("--now"), label: "Last 12 months" },
+    ], "dot"));
+    return holder;
+  }
+
+  // ---- cards -------------------------------------------------------------
+  function card(title, note) {
+    const c = el("div", "card");
+    if (title) c.appendChild(el("h3", null, title));
+    if (note) c.appendChild(el("p", "note", note));
+    return c;
+  }
+
+  function kpi(label, value, deltaNode) {
+    const k = el("div", "kpi");
+    k.appendChild(el("p", "label", label));
+    k.appendChild(el("div", "value", value));
+    if (deltaNode) k.appendChild(deltaNode);
+    return k;
+  }
+
+  function deltaLine(text, dir) {
+    const d = el("div", "delta");
+    const s = el("span", dir === 0 ? "flat" : (dir > 0 ? "up" : "down"), text);
+    d.appendChild(s);
+    return d;
+  }
+
+  const METRIC_META = {
+    monthly: { label: "Deal registrations", fmt: fmtInt, integer: true,
+      note: "Volume only. Read it alongside the rep count below — volume alone cannot tell you whether allocation changed." },
+    effective_reps: { label: "Effective reps", fmt: fmt1, integer: false,
+      note: "1 / Σ(share²). Reads as “regs were effectively spread across N reps”. Falls when regs concentrate onto fewer people, and is comparable month to month even as headcount changes." },
+    active_reps: { label: "Reps with ≥ 1 reg", fmt: fmt1, integer: false,
+      note: "The denominator behind every other number here. Concentration rising while this falls is a headcount story, not an allocation decision." },
+    mean_per_rep: { label: "Regs per active rep", fmt: fmt1, integer: false,
+      note: "Mean registrations per rep who received at least one that month." },
+    gini: { label: "Gini", fmt: fmt3, integer: false,
+      note: "0 = every rep got the same number of regs; higher = more uneven. Sensitive across the whole distribution, so it catches a long tail of reps getting scraps." },
+    top1_share: { label: "Top rep's share", fmt: (v) => pct(v, 0), integer: false,
+      note: "Blunt but legible: the single largest rep's share of the pod that month." },
+  };
+
+  function renderOverview() {
+    const host = document.getElementById("overview");
+    host.textContent = "";
+    const pods = activePods();
+    if (!pods.length) {
+      const all = state.basis === "isr" ? DATA.isr_pods : DATA.pods;
+      const unassigned = all.find((p) => p.pod === DATA.meta.unassigned_label);
+      let why = "No pods match the current filter.";
+      if (unassigned && unassigned.total && all.length === 1) {
+        why = "None of the " + fmtInt(unassigned.total) + " registrations in the window " +
+          "could be assigned to a pod, so there is nothing to chart per pod. The export " +
+          "has no territory or country column that matched, or its values are not in " +
+          "config/pods.yml. See the data-quality section below for the values that did " +
+          "not resolve, then map reps to pods via rep_overrides in config/pods.yml.";
+      } else if (state.basis === "isr") {
+        why = "No ISR data is available for this selection — the export has no ISR " +
+          "column, or it is empty. Switch “Allocated to” back to sales rep.";
+      }
+      host.appendChild(card("Nothing to chart", why));
+      return;
+    }
+    const meta = METRIC_META[state.metric];
+    const series = pods.map((p) => ({
+      label: p.pod,
+      color: sv(SERIES[podColorIndex(p.pod)]),
+      values: state.metric === "monthly" ? p.monthly : p.concentration[state.metric],
+    }));
+
+    const c = card(meta.label + " by month", meta.note);
+    c.appendChild(lineChart({
+      series, yLabel: meta.label, valueFmt: meta.fmt, integer: meta.integer,
+      ariaLabel: meta.label + " by month, one line per pod",
+    }));
+    if (series.length >= 2) {
+      c.appendChild(legendList(series.map((s) => ({ color: s.color, label: s.label })), "line"));
+    }
+    c.appendChild(tableView(
+      "Show table — " + meta.label + " by month",
+      ["Month"].concat(series.map((s) => s.label)),
+      MONTHS.map((m, i) => [shortMonth(m)].concat(series.map((s) => meta.fmt(s.values[i]))))
+    ));
+    host.appendChild(c);
+
+    // KPI row: one tile per pod, first-12 vs last-12.
+    const kr = el("div", "kpis");
+    pods.forEach((p) => {
+      const t = p.trend;
+      const dir = t.h2_effective_reps === null || t.h1_effective_reps === null ? 0
+        : (t.h2_effective_reps - t.h1_effective_reps);
+      const k = kpi(
+        p.pod + " — effective reps",
+        fmt1(t.h2_effective_reps),
+        deltaLine(
+          signed(dir, 1) + " vs first 12mo · " +
+          fmt1(t.h1_effective_reps) + " → " + fmt1(t.h2_effective_reps),
+          Math.abs(dir) < 0.3 ? 0 : dir
+        )
+      );
+      const dot = el("span", "keydot");
+      dot.style.background = sv(SERIES[podColorIndex(p.pod)]);
+      dot.style.display = "inline-block";
+      dot.style.marginRight = "6px";
+      k.querySelector(".label").prepend(dot);
+      kr.appendChild(k);
+    });
+    host.appendChild(kr);
+  }
+
+  function renderReading() {
+    const host = document.getElementById("reading");
+    host.textContent = "";
+    host.appendChild(el("h2", null, "How to read this"));
+    const p = el("p", "note");
+    p.textContent =
+      "Allocation is counted by the month a registration was created — the month it " +
+      "landed on a rep — not by close date. Each registration counts once, against its " +
+      "owner. Three numbers have to be read together: total regs (how much came in), " +
+      "reps receiving regs (how many people it was split between), and the concentration " +
+      "measures (how evenly). A pod can hold volume flat, lose two reps, and hand " +
+      "everyone more work without any allocation policy changing.";
+    host.appendChild(p);
+    const p2 = el("p", "note");
+    p2.textContent =
+      "Stage reflects each registration's status as of the export, not its status when " +
+      "created, so recent months skew toward Open simply because those deals have had " +
+      "less time to resolve. Reps shown in italics did not receive regs across the whole " +
+      "window; their share movement is mostly arrival or departure, not an allocation decision.";
+    host.appendChild(p2);
+  }
+
+  function renderPods() {
+    const host = document.getElementById("pods");
+    host.textContent = "";
+    activePods().forEach((p) => {
+      const head = el("div", "pod-head");
+      const dot = el("span", "keydot");
+      dot.style.background = sv(SERIES[podColorIndex(p.pod)]);
+      head.appendChild(dot);
+      head.appendChild(el("h2", null, p.pod));
+      const t = p.trend;
+      head.appendChild(el("span", "note",
+        fmtInt(t.total) + " regs · " + t.reps_ever_active +
+        (state.basis === "isr" ? " ISRs" : " reps") + " · " +
+        t.reps_full_window + " active all " + NM + " months"));
+      host.appendChild(head);
+
+      // Pod KPI row.
+      const kr = el("div", "kpis");
+      kr.appendChild(kpi("Deal registrations", fmtInt(t.total),
+        deltaLine(fmtInt(t.h1_total) + " → " + fmtInt(t.h2_total) + " (" +
+          signed(t.volume_pct_change, 0, "%") + ")",
+          t.volume_pct_change === null ? 0 : t.volume_pct_change)));
+      kr.appendChild(kpi("Regs per active rep / month", fmt1(t.h2_regs_per_rep),
+        deltaLine(fmt1(t.h1_regs_per_rep) + " → " + fmt1(t.h2_regs_per_rep) + " (" +
+          signed(t.regs_per_rep_pct_change, 0, "%") + ")",
+          t.regs_per_rep_pct_change === null ? 0 : t.regs_per_rep_pct_change)));
+      kr.appendChild(kpi("Effective reps sharing regs", fmt1(t.h2_effective_reps),
+        deltaLine(fmt1(t.h1_effective_reps) + " → " + fmt1(t.h2_effective_reps),
+          (t.h1_effective_reps === null || t.h2_effective_reps === null) ? 0
+            : (Math.abs(t.h2_effective_reps - t.h1_effective_reps) < 0.3 ? 0
+              : t.h2_effective_reps - t.h1_effective_reps))));
+      kr.appendChild(kpi("Gini (0 = even)", fmt3(t.h2_gini),
+        deltaLine(fmt3(t.h1_gini) + " → " + fmt3(t.h2_gini) + " (" +
+          signed(t.gini_delta, 3) + ")",
+          t.gini_delta === null ? 0 : (Math.abs(t.gini_delta) < 0.03 ? 0 : -t.gini_delta))));
+      kr.appendChild(kpi("Top rep's monthly share", pct(t.h2_top1, 0),
+        deltaLine(pct(t.h1_top1, 0) + " → " + pct(t.h2_top1, 0) + " · top 3: " +
+          pct(t.h1_top3, 0) + " → " + pct(t.h2_top3, 0),
+          t.h1_top1 === null || t.h2_top1 === null ? 0 : -(t.h2_top1 - t.h1_top1))));
+      host.appendChild(kr);
+      host.appendChild(el("div", null, "")).style.height = "18px";
+
+      // Allocation heatmap.
+      const owner = state.basis === "isr" ? "ISR" : "rep";
+      let note = "Each cell is that " + owner + "'s share of the pod's registrations that " +
+        "month. A row that darkens left-to-right is a " + owner + " taking a growing slice; " +
+        "a pod whose rows even out is spreading allocation more widely.";
+      if (p.reps_total_count > DATA.meta.max_reps_charted) {
+        note += " The " + (p.reps_total_count - DATA.meta.max_reps_charted) +
+          " smallest " + owner + "s are folded into one row; the CSVs carry every " + owner + ".";
+      }
+      const hc = card("Allocation share by " + owner + " and month", note);
+      hc.appendChild(shareHeatmap(p));
+      hc.appendChild(tableView(
+        "Show table — deal regs by " + owner + " and month",
+        [owner === "ISR" ? "ISR" : "Rep", "Total"].concat(MONTHS.map(shortMonth)),
+        p.reps.map((r) => [r.rep, fmtInt(r.total)].concat(r.monthly.map((v) => String(v)))),
+        ["Pod total", fmtInt(p.total)].concat(p.monthly.map((v) => String(v)))
+      ));
+      host.appendChild(hc);
+
+      // Dumbbell.
+      const db = dumbbell(p);
+      if (db) {
+        const dc = card("Share change per " + owner + ": first 12 months vs last 12",
+          "Where each " + owner + " sat in the pod's allocation at the start of the window " +
+          "versus the end. Reps who arrived or left mid-window move here for reasons that " +
+          "are not allocation decisions — check the tenure note in the tooltip before " +
+          "drawing a conclusion.");
+        dc.appendChild(db);
+        dc.appendChild(tableView(
+          "Show table — share change per " + owner,
+          [owner === "ISR" ? "ISR" : "Rep", "First 12mo regs", "Last 12mo regs",
+            "First 12mo share", "Last 12mo share", "Change (pp)", "Active", "Tenure"],
+          p.reps.map((r) => [
+            r.rep, fmtInt(r.h1_count), fmtInt(r.h2_count),
+            pct(r.h1_share), pct(r.h2_share), signed(r.share_delta_pp, 1),
+            r.months_active ? r.months_active + "/" + NM : "—",
+            r.tenure_flag || "—",
+          ])
+        ));
+        host.appendChild(dc);
+      }
+
+      // Deal-type mix.
+      if (p.deal_type.categories.length) {
+        const dtc = card("Deal type mix by month",
+          "What kind of business the pod's registrations represent. This matters for " +
+          "allocation: a " + owner + " loaded with renewals is not being handed the same " +
+          "opportunity as one receiving new-logo regs, even at identical reg counts.");
+        dtc.appendChild(stackedColumns(p.deal_type.categories, p.deal_type.series, SERIES));
+        dtc.appendChild(legendList(p.deal_type.categories.map((c, i) => ({
+          color: sv(SERIES[i % SERIES.length]), label: c,
+        })), "rect"));
+        dtc.appendChild(tableView(
+          "Show table — deal type by month",
+          ["Month"].concat(p.deal_type.categories).concat(["Total"]),
+          MONTHS.map((m, i) => {
+            const vals = p.deal_type.categories.map((c) => p.deal_type.series[c][i] || 0);
+            return [shortMonth(m)].concat(vals.map(String))
+              .concat([String(vals.reduce((a, b) => a + b, 0))]);
+          })
+        ));
+        host.appendChild(dtc);
+      }
+
+      // Outcome mix + per-rep deal-type/outcome table.
+      if (p.outcome.categories.length) {
+        const oc = card("Stage outcome mix by month",
+          "Registrations bucketed by their current CRM stage. Because stage is a " +
+          "point-in-time field, recent months are mostly Open — that is deal age, not " +
+          "deteriorating quality. What is worth reading is a persistent Rejected/Duplicate " +
+          "band, which means regs are being allocated that were never workable.");
+        oc.appendChild(stackedColumns(p.outcome.categories, p.outcome.series, SERIES));
+        oc.appendChild(legendList(p.outcome.categories.map((c, i) => ({
+          color: sv(SERIES[i % SERIES.length]), label: c,
+        })), "rect"));
+        oc.appendChild(tableView(
+          "Show table — stage outcome by month",
+          ["Month"].concat(p.outcome.categories),
+          MONTHS.map((m, i) => [shortMonth(m)].concat(
+            p.outcome.categories.map((c) => String(p.outcome.series[c][i] || 0))))
+        ));
+        if (p.stages && p.stages.length) {
+          oc.appendChild(tableView(
+            "Show table — detailed CRM stages (window total)",
+            ["CRM stage", "Deal regs", "% of pod"],
+            p.stages.map((s) => [s[0], fmtInt(s[1]),
+              pct(p.total ? s[1] / p.total * 100 : null)])
+          ));
+        }
+        host.appendChild(oc);
+      }
+
+      const mixc = card("Per-" + owner + " profile",
+        "The same window totals cut by mix, so two " + owner + "s with similar reg counts " +
+        "can be told apart by what they were actually given.");
+      mixc.appendChild(tableView(
+        "Show table — per-" + owner + " mix and outcome profile",
+        [owner === "ISR" ? "ISR" : "Rep", "Total regs", "Top deal type", "New business",
+          "Renewal", "Open", "Won", "Rejected", "Active months",
+          state.basis === "isr" ? "" : "Top ISRs"].filter(Boolean),
+        p.reps.map((r) => {
+          const row = [
+            r.rep, fmtInt(r.total), r.top_deal_type || "—",
+            pct(r.new_business_pct, 0), pct(r.renewal_pct, 0), pct(r.open_pct, 0),
+            pct(r.won_pct, 0), pct(r.rejected_pct, 0),
+            r.months_active ? r.months_active + "/" + NM : "—",
+          ];
+          if (state.basis !== "isr") row.push(r.isrs && r.isrs.length ? r.isrs.join(", ") : "—");
+          return row;
+        })
+      ));
+      host.appendChild(mixc);
+    });
+  }
+
+  function renderQuality() {
+    const host = document.getElementById("quality");
+    host.textContent = "";
+    const q = DATA.quality;
+    const c = card("Data quality", "Read this before quoting any number above. " +
+      "Nothing is dropped silently: rows that could not be used are counted here, and " +
+      "registrations that could not be assigned to a pod are reported separately rather " +
+      "than distributed across pods.");
+    c.classList.add("quality");
+
+    const dl = el("dl");
+    const add = (k, v, warn) => {
+      dl.appendChild(el("dt", null, k));
+      dl.appendChild(el("dd", warn ? "warn" : null, v));
+    };
+    add("Rows in file", fmtInt(q.rows_in_file));
+    add("Rows loaded", fmtInt(q.rows_loaded));
+    add("Rows inside the " + NM + "-month window", fmtInt(q.rows_in_window));
+    add("Rows outside the window", fmtInt(q.rows_outside_window));
+    add("Missing rep / owner", pct(q.pct_missing_rep), q.pct_missing_rep > 5);
+    add("Missing ISR", pct(q.pct_missing_isr), q.pct_missing_isr > 40);
+    add("Missing stage", pct(q.pct_missing_stage), q.pct_missing_stage > 5);
+    add("Missing deal type", pct(q.pct_missing_deal_type), q.pct_missing_deal_type > 5);
+    add("Unassigned pod", pct(q.pct_unassigned_pod), q.pct_unassigned_pod > 5);
+    add("Missing amount", pct(q.pct_missing_amount), q.pct_missing_amount > 20);
+    c.appendChild(dl);
+
+    const listSection = (title, items) => {
+      if (!items || !items.length) return;
+      c.appendChild(el("h3", null, title));
+      const ul = el("ul");
+      items.forEach((t) => ul.appendChild(el("li", null, t)));
+      c.appendChild(ul);
+    };
+    listSection("Rows skipped", Object.entries(q.skipped || {}).map(([k, v]) => v + " — " + k));
+    listSection("Fields with no matching column", (q.unresolved_fields || []));
+    listSection("Columns used", Object.entries(q.resolved_headers || {}).map(([k, v]) => k + " ← " + v));
+    listSection("Notes", q.notes || []);
+    listSection("Territory values that did not map to a pod (add to config/pods.yml)",
+      Object.entries(q.unresolved_pod_values || {}).map(([k, v]) => k + " (" + v + " rows)"));
+    listSection("Country values that did not map to a pod",
+      Object.entries(q.unresolved_countries || {}).map(([k, v]) => k + " (" + v + " rows)"));
+    listSection("Configured pods with no data in the window", DATA.meta.empty_pods || []);
+
+    const unassigned = (state.basis === "isr" ? DATA.isr_pods : DATA.pods)
+      .find((p) => p.pod === DATA.meta.unassigned_label);
+    if (unassigned && unassigned.total) {
+      c.appendChild(el("h3", null, "Unassigned registrations"));
+      c.appendChild(el("p", "note",
+        fmtInt(unassigned.total) + " registrations could not be assigned to a pod and are " +
+        "excluded from the pod sections above. Fill in rep_overrides in config/pods.yml to " +
+        "resolve them."));
+    }
+    host.appendChild(c);
+  }
+
+  function renderAll() {
+    renderReading();
+    renderOverview();
+    renderPods();
+    renderQuality();
+  }
+
+  // ---- init --------------------------------------------------------------
+  document.getElementById("sub").textContent =
+    DATA.meta.window_label + " · " + NM + " months · generated " + DATA.meta.generated_at;
+
+  const podSel = document.getElementById("f-pod");
+  function refreshPodOptions() {
+    const cur = state.pod;
+    podSel.textContent = "";
+    const all = el("option", null, "All pods");
+    all.value = "__all__";
+    podSel.appendChild(all);
+    (state.basis === "isr" ? DATA.isr_pods : DATA.pods)
+      .filter((p) => p.pod !== DATA.meta.unassigned_label)
+      .forEach((p) => {
+        const o = el("option", null, p.pod + " (" + p.total + ")");
+        o.value = p.pod;
+        podSel.appendChild(o);
+      });
+    podSel.value = Array.from(podSel.options).some((o) => o.value === cur) ? cur : "__all__";
+    state.pod = podSel.value;
+  }
+  refreshPodOptions();
+
+  document.getElementById("f-basis").addEventListener("change", (ev) => {
+    state.basis = ev.target.value;
+    refreshPodOptions();
+    renderAll();
+  });
+  podSel.addEventListener("change", (ev) => { state.pod = ev.target.value; renderAll(); });
+  document.getElementById("f-metric").addEventListener("change", (ev) => {
+    state.metric = ev.target.value;
+    renderOverview();
+  });
+
+  const themeBtn = document.getElementById("f-theme");
+  const THEMES = ["auto", "light", "dark"];
+  let themeIdx = 0;
+  themeBtn.addEventListener("click", () => {
+    themeIdx = (themeIdx + 1) % THEMES.length;
+    const t = THEMES[themeIdx];
+    if (t === "auto") document.documentElement.removeAttribute("data-theme");
+    else document.documentElement.setAttribute("data-theme", t);
+    themeBtn.textContent = t.charAt(0).toUpperCase() + t.slice(1);
+    renderAll();
+  });
+
+  if (DATA.meta.synthetic_warning) {
+    const b = el("div", "synthetic");
+    b.textContent = DATA.meta.synthetic_warning;
+    document.getElementById("synthetic-banner").appendChild(b);
+  }
+
+  renderAll();
+})();
+</script>
+</body>
+</html>

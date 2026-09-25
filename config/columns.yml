@@ -1,0 +1,49 @@
+# Column mapping overrides.
+#
+# The loader auto-detects columns by matching your export's headers against a
+# built-in alias list (see dealreg/loader.py). Run:
+#
+#     python3 run.py --input <your-export.csv> --describe
+#
+# to see which header it picked for each canonical field, and what it could
+# not resolve. Then pin anything it got wrong here.
+#
+# Format is  canonical_field: "Exact Header Text From Your File"
+# Leave a field out to keep auto-detection for it. Set a field to null to
+# force it to be treated as absent.
+
+mapping:
+  # --- required ---
+  # created_date: "Deal Registration: Created Date"   # month bucket driver
+  # rep:          "Opportunity Owner"                 # the AE the reg landed on
+
+  # --- strongly recommended ---
+  # isr:          "ISR"
+  # pod:          "Sales Territory"
+  # stage:        "Stage"
+  # deal_type:    "Opportunity Type"
+
+  # --- optional ---
+  # deal_reg_id:  "Deal Registration Name"
+  # country:      "Billing Country"
+  # amount:       "Amount (converted)"
+  # partner:      "Partner Account"
+  # account:      "Account Name"
+  # close_date:   "Close Date"
+
+# Date parsing. Salesforce reports export in the running user's locale, so a
+# date like 03/04/2025 is ambiguous. Set this to match your org's export:
+#   auto      -- infer from the data, error out if genuinely ambiguous
+#   dayfirst  -- 03/04/2025 is 3 April
+#   monthfirst-- 03/04/2025 is 4 March
+date_order: auto
+
+# Which date field defines the month a registration is "allocated" in.
+# Almost always the creation/submission date, not the close date: allocation
+# happens when the reg lands on a rep.
+month_basis: created_date
+
+# Rows whose amount is blank are kept (allocation is about counts, not value).
+# Set to true to drop rows with no owner -- by default they are kept and
+# reported as "(unassigned)" so nothing silently vanishes from the totals.
+drop_rows_without_rep: false

@@ -1,0 +1,168 @@
+# EMEA pod definitions for deal-registration allocation analysis.
+#
+# This file is the single place to correct how the analysis groups reps and
+# accounts into pods. Edit it to match how EMEA is actually carved up -- the
+# defaults below are a best-effort starting point, NOT authoritative.
+#
+# Resolution order for each deal registration (first match wins):
+#   1. explicit `rep_overrides` (rep name -> pod)          <- most reliable
+#   2. the source column mapped to `pod` (e2 territory/team field)
+#   3. `pod_aliases` applied to that raw pod/territory value
+#   4. `country_to_pod` applied to the mapped `country` column
+#   5. unassigned  -> reported separately, never silently dropped
+
+pods:
+  - UKI & Nordics
+  - Southern Europe
+  - DACH
+
+# ---------------------------------------------------------------------------
+# Raw territory / team / segment values -> canonical pod.
+# Matching is case-insensitive and ignores punctuation, so "UKI/Nordics",
+# "UKI & Nordics" and "uki nordics" all collapse to the same key.
+# ---------------------------------------------------------------------------
+pod_aliases:
+  UKI & Nordics:
+    - uki
+    - uki nordics
+    - uki and nordics
+    - uk ireland
+    - uk & i
+    - ukin
+    - nordics
+    - northern europe
+    - uki nordics pod
+  Southern Europe:
+    - southern europe
+    - south europe
+    - semea
+    - s emea
+    - southern emea
+    - med
+    - mediterranean
+    - iberia
+    - italy iberia
+    - france iberia
+    - southern europe pod
+  DACH:
+    - dach
+    - dach pod
+    - germany austria switzerland
+    - central europe
+    - ce
+    - gsa
+
+# ---------------------------------------------------------------------------
+# Country -> pod fallback, used only when no pod/territory value resolves.
+#
+# NOTE ON FRANCE: France is placed in Southern Europe here because it is
+# commonly run that way, but plenty of EMEA orgs run France as its own pod or
+# fold it into a Western Europe pod. If France is not in your Southern Europe
+# pod, move it to `country_to_pod_excluded` below and it will be reported
+# under "unassigned" rather than inflating Southern Europe.
+# ---------------------------------------------------------------------------
+country_to_pod:
+  UKI & Nordics:
+    - united kingdom
+    - uk
+    - gb
+    - gbr
+    - great britain
+    - england
+    - scotland
+    - wales
+    - northern ireland
+    - ireland
+    - ie
+    - irl
+    - denmark
+    - dk
+    - sweden
+    - se
+    - norway
+    - no
+    - nor
+    - finland
+    - fi
+    - iceland
+    - is
+  DACH:
+    - germany
+    - de
+    - deu
+    - deutschland
+    - austria
+    - at
+    - aut
+    - switzerland
+    - ch
+    - che
+    - liechtenstein
+    - li
+  Southern Europe:
+    - france
+    - fr
+    - fra
+    - italy
+    - it
+    - ita
+    - spain
+    - es
+    - esp
+    - portugal
+    - pt
+    - prt
+    - greece
+    - gr
+    - grc
+    - malta
+    - mt
+    - cyprus
+    - cy
+    - israel
+    - il
+    - isr
+    - turkey
+    - tr
+    - tur
+    - monaco
+    - mc
+    - andorra
+    - san marino
+
+# Countries to deliberately keep OUT of the country fallback. Anything listed
+# here lands in "unassigned" instead of being forced into a pod.
+country_to_pod_excluded: []
+
+# ---------------------------------------------------------------------------
+# Authoritative rep -> pod assignment. Fill this in from the EMEA org chart
+# and it overrides every other rule. This is the fix for reps who moved pod
+# mid-window or who carry accounts across pod lines.
+#
+# Example:
+#   rep_overrides:
+#     "Jane Doe": DACH
+#     "John Smith": UKI & Nordics
+# ---------------------------------------------------------------------------
+rep_overrides: {}
+
+# Same idea for ISRs, when ISR pod differs from the AE's pod.
+isr_overrides: {}
+
+# ---------------------------------------------------------------------------
+# Names to exclude entirely from per-rep allocation stats: queues, integration
+# users, channel/partner-team catch-alls, and managers who hold regs only in
+# transit. Leaving these in makes the concentration metrics look far worse
+# than reality, because a queue absorbs a large share of regs.
+# Matching is case-insensitive substring.
+# ---------------------------------------------------------------------------
+excluded_owner_patterns:
+  - integration user
+  - data admin
+  - deleted user
+  - unassigned queue
+  - deal reg queue
+  - channel queue
+  - partner portal
+  - api user
+  - system
