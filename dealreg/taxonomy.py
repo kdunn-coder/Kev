@@ -258,11 +258,26 @@ class PodResolver:
     rep_overrides: dict[str, str] = field(default_factory=dict)
     isr_overrides: dict[str, str] = field(default_factory=dict)
     excluded_owner_patterns: list[str] = field(default_factory=list)
+    #: Aliases ordered longest-first (by token count, then length), so the
+    #: token rescue prefers the most specific match. Built in __post_init__.
+    _aliases_by_token_length: list[tuple[str, str]] = field(default_factory=list)
+    #: Country names long enough to be safe to match inside a territory path.
+    _long_country_names: list[tuple[str, str]] = field(default_factory=list)
     #: Counts of how each record got its pod, for the data-quality report.
     provenance: dict[str, int] = field(default_factory=dict)
     #: Raw values that failed to resolve, so the user can fix the config.
     unresolved_pod_values: dict[str, int] = field(default_factory=dict)
     unresolved_countries: dict[str, int] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        self._aliases_by_token_length = sorted(
+            self.pod_alias_to_pod.items(),
+            key=lambda kv: (-len(kv[0].split()), -len(kv[0])),
+        )
+        self._long_country_names = sorted(
+            ((name, pod) for name, pod in self.country_to_pod.items() if len(name) >= 4),
+            key=lambda kv: (-len(kv[0].split()), -len(kv[0])),
+        )
 
     @classmethod
     def from_config(cls, cfg: dict) -> "PodResolver":
@@ -319,11 +334,41 @@ class PodResolver:
             if pk in self.pod_alias_to_pod:
                 self._bump("pod_column")
                 return self.pod_alias_to_pod[pk]
-            # Substring rescue for values like
-            # "EMEA - DACH - Enterprise" that carry the pod inside a path.
-            for alias, pod in self.pod_alias_to_pod.items():
-                if alias and alias in pk:
-                    self._bump("pod_column_substring")
+            # Token rescue for values like "EMEA - DACH - Enterprise" that
+            # carry the pod inside a path.
+            #
+            # This matches on whole tokens, never raw substrings. A raw
+            # substring test makes short aliases catastrophic: "ce" (Central
+            # Europe) is inside "fran-ce", so a territory of "France" resolved
+            # to DACH. Longest alias first, so "uki nordics" wins over the
+            # bare "nordics" when a value contains both.
+            v_tokens = pk.split()
+            for alias, pod in self._aliases_by_token_length:
+                a_tokens = alias.split()
+                n = len(a_tokens)
+                if n and any(v_tokens[i:i + n] == a_tokens
+                             for i in range(len(v_tokens) - n + 1)):
+                    self._bump("pod_column_token")
+                    return pod
+            # Territory fields are routinely filled with a country rather than
+            # a pod ("France", "Germany"), so try the country map on this value
+            # before giving up. Exact match only: a substring match here would
+            # let a country name buried in a longer territory string outrank
+            # the pod aliases already checked above.
+            if pk in self.country_to_pod:
+                self._bump("pod_column_as_country")
+                return self.country_to_pod[pk]
+            # A country embedded in a longer path ("EMEA - France - Enterprise").
+            # Restricted to country names of 4+ characters: the 2-3 letter ISO
+            # codes are matched exactly above, and would be reckless as tokens
+            # inside a path, where "IT" means Information Technology far more
+            # often than Italy, and "NO", "IS" and "AT" are ordinary words.
+            for name, pod in self._long_country_names:
+                n_tokens = name.split()
+                n = len(n_tokens)
+                if any(v_tokens[i:i + n] == n_tokens
+                       for i in range(len(v_tokens) - n + 1)):
+                    self._bump("pod_column_contains_country")
                     return pod
             self.unresolved_pod_values[str(pod_value).strip()] = (
                 self.unresolved_pod_values.get(str(pod_value).strip(), 0) + 1

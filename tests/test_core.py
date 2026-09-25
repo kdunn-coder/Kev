@@ -165,6 +165,50 @@ def test_pod_resolution() -> None:
     check("queue match is case-insensitive", r.is_excluded_owner("INTEGRATION USER"), True)
     check("real rep not excluded", r.is_excluded_owner("Aoife Brennan"), False)
 
+    section("Pod resolution against the real config/pods.yml")
+    # Regression guard. Alias matching used to be a raw substring test, which
+    # made short aliases catastrophic: "ce" (Central Europe, a DACH alias) is
+    # inside "fran-ce", so a territory of "France" resolved to DACH. Matching
+    # is now on whole tokens. The false-positive cases below are the point of
+    # this block -- they must NOT resolve.
+    import yaml
+    live = PodResolver.from_config(
+        yaml.safe_load((ROOT / "config" / "pods.yml").read_text(encoding="utf-8")))
+    for territory, country, want in [
+        # France is confirmed part of Southern Europe.
+        ("France", "", "Southern Europe"),
+        ("FR", "", "Southern Europe"),
+        ("", "France", "Southern Europe"),
+        ("EMEA - France - Enterprise", "", "Southern Europe"),
+        ("EMEA - Southern Europe - France", "", "Southern Europe"),
+        # Other members of the three pods.
+        ("Greece", "", "Southern Europe"),
+        ("EMEA - Italy - SMB", "", "Southern Europe"),
+        ("Iberia", "", "Southern Europe"),
+        ("SEMEA", "", "Southern Europe"),
+        ("EMEA - Germany - Enterprise", "", "DACH"),
+        ("EMEA - DACH - Enterprise", "", "DACH"),
+        ("Central Europe", "", "DACH"),
+        ("CE", "", "DACH"),                      # standalone code still resolves
+        ("UKI/Nordics", "", "UKI & Nordics"),
+        ("EMEA - UKI & Nordics - Commercial", "", "UKI & Nordics"),
+        ("United Kingdom", "", "UKI & Nordics"),
+        # False positives that must stay unassigned.
+        ("Nice", "", "(unassigned)"),             # contains "ce"
+        ("Service Providers", "", "(unassigned)"),# contains "ce"
+        ("EMEA - IT Services", "", "(unassigned)"),  # IT = Information Technology
+        ("AT Risk Accounts", "", "(unassigned)"),    # AT is a word here
+        ("NO Territory Assigned", "", "(unassigned)"),
+        # Countries outside the three pods are never force-fit.
+        ("Belgium", "", "(unassigned)"),
+        ("Netherlands", "", "(unassigned)"),
+        ("Poland", "", "(unassigned)"),
+        ("Middle East", "", "(unassigned)"),
+        ("EMEA - Other", "", "(unassigned)"),
+    ]:
+        label = f"territory={territory!r}" + (f" country={country!r}" if country else "")
+        check(label, live.resolve(pod_value=territory, country=country), want)
+
 
 def test_parsing() -> None:
     section("Currency parsing (exports carry mixed locales)")

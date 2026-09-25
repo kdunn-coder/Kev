@@ -53,13 +53,16 @@ pod_aliases:
     - gsa
 
 # ---------------------------------------------------------------------------
-# Country -> pod fallback, used only when no pod/territory value resolves.
+# Country -> pod fallback, used when no pod/territory value resolves.
 #
-# NOTE ON FRANCE: France is placed in Southern Europe here because it is
-# commonly run that way, but plenty of EMEA orgs run France as its own pod or
-# fold it into a Western Europe pod. If France is not in your Southern Europe
-# pod, move it to `country_to_pod_excluded` below and it will be reported
-# under "unassigned" rather than inflating Southern Europe.
+# FRANCE: confirmed part of the Southern Europe pod, so it stays in the
+# Southern Europe list below. Do not move it without confirming again -- it
+# carries real volume, and relocating it shifts both pods' totals and every
+# concentration metric derived from them.
+#
+# Countries NOT in one of the three pods (Benelux, Middle East, Africa,
+# Eastern Europe) are deliberately absent. They resolve to "(unassigned)" and
+# are reported separately rather than being forced into the nearest pod.
 # ---------------------------------------------------------------------------
 country_to_pod:
   UKI & Nordics:
